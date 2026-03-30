@@ -1,5 +1,5 @@
 """
-KnobMixer v2.1
+KnobMixer v2.4
 All fixes applied:
 - Instant autosave on every change
 - Inline hotkey capture (no popup, supports combos, 2s listen window)
@@ -306,7 +306,7 @@ _HOOK = GlobalHookManager()
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 APP_NAME    = "KnobMixer"
-APP_VER     = "2.2"
+APP_VER     = "2.4"
 APPDATA_DIR = Path(os.getenv("APPDATA",".")) / APP_NAME
 APPDATA_DIR.mkdir(parents=True, exist_ok=True)
 CONFIG_FILE = APPDATA_DIR / "config.json"
@@ -2688,17 +2688,75 @@ class App:
 
     # ── Global on/off ─────────────────────────────────────────────────────────
     def set_update_available(self, ver, url):
-        """Called when a newer version is found. Updates button quietly."""
+        """Called when a newer version is found — shows download button."""
         self._update_url[0] = url
+        self._update_ver    = ver
         self._update_btn.config(
-            text=f"v{ver} available",
+            text=f"v{ver} available — click to update",
             bg="#1a3a1a", fg="#1DB954",
-            command=self._open_update_url)
+            command=self._download_and_install)
 
-    def _open_update_url(self):
-        import webbrowser
-        if self._update_url[0]:
-            webbrowser.open(self._update_url[0])
+    def _download_and_install(self):
+        """Download installer silently then run it — in-app update."""
+        import urllib.request, tempfile, subprocess, os
+
+        # Build direct download URL from the releases page URL
+        # GitHub direct download: releases/download/vX.Y/KnobMixer_Setup.exe
+        ver = getattr(self, "_update_ver", "")
+        if ver:
+            dl_url = (f"https://github.com/{GITHUB_REPO}"
+                      f"/releases/download/v{ver}/KnobMixer_Setup.exe")
+        else:
+            # Fallback — open browser if we don't have the version
+            import webbrowser
+            webbrowser.open(self._update_url[0] or
+                            f"https://github.com/{GITHUB_REPO}/releases/latest")
+            return
+
+        # Disable button while downloading
+        self._update_btn.config(text="Starting download…",
+                                fg=SUBTEXT, bg=BORDER, command=lambda: None)
+
+        def _download():
+            try:
+                # Save to temp file
+                tmp = Path(tempfile.gettempdir()) / "KnobMixer_Setup.exe"
+
+                def _progress(count, block, total):
+                    if total > 0:
+                        pct = min(100, int(count * block * 100 / total))
+                        self.root.after(0, lambda p=pct:
+                            self._update_btn.config(
+                                text=f"Downloading… {p}%",
+                                fg=SUBTEXT, bg=BORDER)
+                            if self._update_btn.winfo_exists() else None)
+
+                urllib.request.urlretrieve(dl_url, tmp, _progress)
+
+                # Download complete — run installer
+                # The installer closes KnobMixer itself (taskkill in [Run])
+                # so we just launch it and let it take over
+                self.root.after(0, lambda: self._update_btn.config(
+                    text="Installing…", fg=SUBTEXT, bg=BORDER)
+                    if self._update_btn.winfo_exists() else None)
+
+                subprocess.Popen([str(tmp)], shell=False)
+                # Give the installer a moment to start, then quit our app
+                # The installer will relaunch us when done
+                self.root.after(1500, self._quit)
+
+            except Exception as e:
+                # Download failed — fall back to browser
+                import webbrowser
+                self.root.after(0, lambda: (
+                    self._update_btn.config(
+                        text="Download failed — click to open browser",
+                        fg="#cc6666", bg="#2a1a1a",
+                        command=lambda: webbrowser.open(
+                            f"https://github.com/{GITHUB_REPO}/releases/latest"))
+                    if self._update_btn.winfo_exists() else None))
+
+        threading.Thread(target=_download, daemon=True).start()
 
     def _manual_update_check(self):
         """User clicked Update button — disable it while checking."""
