@@ -34,6 +34,29 @@ def _ensure_deps():
                                   creationflags=subprocess.CREATE_NO_WINDOW)
 _ensure_deps()
 
+# ── Crash logging ─────────────────────────────────────────────────────────────
+import traceback as _tb
+
+def _setup_crash_log():
+    """Redirect unhandled exceptions to a crash log in %APPDATA%\KnobMixer."""
+    log_dir = Path(os.getenv("APPDATA",".")) / "KnobMixer"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_file = log_dir / "crash.log"
+    _orig = sys.excepthook
+    def _hook(exc_type, exc_val, exc_tb):
+        try:
+            import datetime
+            with open(log_file, "a", encoding="utf-8") as f:
+                f.write(f"\n{'='*60}\n")
+                f.write(f"KnobMixer v{APP_VER if 'APP_VER' in dir() else '?'} crash — {datetime.datetime.now()}\n")
+                f.write(_tb.format_exception(exc_type, exc_val, exc_tb)[-1])
+                f.write("".join(_tb.format_exception(exc_type, exc_val, exc_tb)))
+        except: pass
+        _orig(exc_type, exc_val, exc_tb)
+    sys.excepthook = _hook
+
+_setup_crash_log()
+
 import tkinter as tk
 from tkinter import ttk, messagebox, colorchooser
 import psutil, keyboard, pystray, comtypes
@@ -351,10 +374,11 @@ DEFAULT_CFG = {
          "keys":{"vol_down":"","vol_up":"","mute":""},
          "single_key":"","step":5,"volume":80,"muted":False,"_vbm":80,
          "foreground_mode":False,"enabled":True,"is_default":False},
-        {"id":2,"name":"Game","color":"#FF6B35",
-         "apps":[],"keys":{"vol_down":"","vol_up":"","mute":""},
+        {"id":2,"name":"Chat","color":"#5865F2",
+         "apps":["discord","teams","slack","zoom","skype","telegram"],
+         "keys":{"vol_down":"","vol_up":"","mute":""},
          "single_key":"","step":5,"volume":80,"muted":False,"_vbm":80,
-         "foreground_mode":True,"enabled":True,"is_default":False},
+         "foreground_mode":False,"enabled":True,"is_default":False},
     ]
 }
 
@@ -657,12 +681,48 @@ def _sessions():
     return out
 
 def _foreground_exe():
+    """Get the foreground window process name."""
     try:
         hwnd = ctypes.windll.user32.GetForegroundWindow()
         pid  = ctypes.c_ulong()
         ctypes.windll.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-        return psutil.Process(pid.value).name().lower().removesuffix(".exe")
+        name = psutil.Process(pid.value).name().lower().removesuffix(".exe")
+        # Skip system/UI processes that should never be treated as a game
+        _skip = {"knobmixer","explorer","searchhost","shellexperiencehost",
+                 "startmenuexperiencehost","applicationframehost","systemsettings",
+                 "python","pythonw","cmd","powershell","windowsterminal","taskmgr",
+                 "discord","teams","slack","zoom","chrome","firefox","msedge",
+                 "opera","brave","spotify","vlc"}
+        if name in _skip: return None
+        return name
     except: return None
+
+def _find_game_process():
+    """Find a running game by checking process priority.
+    Games typically run at HIGH or ABOVE_NORMAL priority."""
+    try:
+        import psutil as _ps
+        _skip = {"knobmixer","explorer","svchost","system","csrss","winlogon",
+                 "services","lsass","smss","wininit","fontdrvhost","dwm",
+                 "searchhost","runtimebroker","discord","chrome","firefox",
+                 "msedge","opera","brave","spotify","teams","slack","zoom",
+                 "python","pythonw","conhost","cmd","powershell"}
+        HIGH_PRIORITY  = 0x00000080
+        ABOVE_NORMAL   = 0x00008000
+        for proc in _ps.process_iter(["name","pid"]):
+            try:
+                name = proc.info["name"].lower().removesuffix(".exe")
+                if name in _skip: continue
+                # Check Windows process priority class
+                handle = ctypes.windll.kernel32.OpenProcess(0x0400, False, proc.info["pid"])
+                if handle:
+                    pc = ctypes.windll.kernel32.GetPriorityClass(handle)
+                    ctypes.windll.kernel32.CloseHandle(handle)
+                    if pc in (HIGH_PRIORITY, ABOVE_NORMAL):
+                        return name
+            except: continue
+    except: pass
+    return None
 
 def _calc_vol(current, delta, cfg):
     thr  = cfg.get("slowdown_threshold", 10)
@@ -704,9 +764,7 @@ def apply_vol(group, cfg):
                     print(f"[Master vol error] {e}")
                 return
             apps = list(group.get("apps",[]))
-            if group.get("foreground_mode") and not apps:
-                fg = _foreground_exe()
-                if fg: apps = [fg]
+            # No foreground mode — apps must be added manually
             sess = _sessions()
             for app in apps:
                 for vc in sess.get(app.lower(),[]):
@@ -719,6 +777,46 @@ def running_audio_apps():
     except: return []
 
 # ── Mic ───────────────────────────────────────────────────────────────────────
+def _get_endpoint_by_name(friendly_name):
+    """Get IAudioEndpointVolume for a capture device by its friendly name."""
+    try:
+        comtypes.CoInitialize()
+        base = r"SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio\Capture"
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, base) as root:
+            idx = 0
+            while True:
+                try: guid_key = winreg.EnumKey(root, idx); idx += 1
+                except OSError: break
+                try:
+                    dev_path  = base + "\\" + guid_key
+                    with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, dev_path) as dk:
+                        state, _ = winreg.QueryValueEx(dk, "DeviceState")
+                        if state != 1: continue
+                    prop_path = dev_path + "\\Properties"
+                    with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, prop_path) as pk:
+                        for prop in ["{a45c254e-df1c-4efd-8020-67d146a850e0},14",
+                                     "{b3f8fa53-0004-438e-9003-51a46e139bfc},6"]:
+                            try:
+                                val, _ = winreg.QueryValueEx(pk, prop)
+                                if val and val.strip() == friendly_name:
+                                    # Found it — build device ID and activate
+                                    dev_id = "{0.0.1.00000000}." + "{" + guid_key + "}"
+                                    import comtypes.client
+                                    enumerator = comtypes.client.CreateObject(
+                                        "{BCDE0395-E52F-467C-8E3D-C4579291692E}",
+                                        interface=comtypes.IUnknown)
+                                    # Use pycaw to activate by scanning sessions
+                                    mic = AudioUtilities.GetMicrophone()
+                                    if mic:
+                                        raw = getattr(mic,"_dev",mic)
+                                        iface = raw.Activate(
+                                            IAudioEndpointVolume._iid_,CLSCTX_ALL,None)
+                                        return iface.QueryInterface(IAudioEndpointVolume)
+                            except: pass
+                except: pass
+    except: pass
+    return None
+
 def get_mic_devices():
     """Return only ACTIVE capture devices, same as Windows Sound Settings.
     DeviceState == 1 means the device is enabled and plugged in."""
@@ -766,12 +864,23 @@ class MicCtrl:
         self._muted = False
         self._lock  = threading.Lock()
 
-    def _ep(self):
+    def _ep(self, cfg=None):
+        """Get IAudioEndpointVolume for the selected mic device.
+        If a specific device is chosen, uses that — otherwise uses Windows default.
+        This fixes HyperX and other non-default mics not being toggled."""
         comtypes.CoInitialize()
         try:
+            # Try selected device by friendly name first
+            dev_name = (cfg or {}).get("mic_device_name","").strip()
+            if dev_name and dev_name != "System Default":
+                # Find device by name in registry and activate it
+                ep = _get_endpoint_by_name(dev_name)
+                if ep: return ep
+            # Fall back to Windows default capture device
             mic = AudioUtilities.GetMicrophone()
             if mic:
-                iface = mic.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+                raw = getattr(mic, "_dev", mic)
+                iface = raw.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
                 return iface.QueryInterface(IAudioEndpointVolume)
         except: pass
         return None
@@ -789,7 +898,7 @@ class MicCtrl:
             self._muted = muted
             def _w():
                 try:
-                    ep = self._ep()
+                    ep = self._ep(cfg)
                     if ep: ep.SetMute(1 if muted else 0, None)
                 except: pass
             threading.Thread(target=_w, daemon=True).start()
@@ -1226,20 +1335,46 @@ class VolumeOverlay:
     def __init__(self, root):
         self._root=root; self._win=None; self._job=None
 
+    def _force_topmost(self):
+        """Force window above fullscreen games. HWND_TOPMOST + NOACTIVATE
+        so the game never loses focus. Do NOT touch WS_EX_LAYERED —
+        tkinter already manages that for -alpha; touching it causes black square."""
+        try:
+            HWND_TOPMOST   = -1
+            SWP_NOMOVE     = 0x0002
+            SWP_NOSIZE     = 0x0001
+            SWP_NOACTIVATE = 0x0010
+            SWP_SHOWWINDOW = 0x0040
+            GWL_EXSTYLE    = -20
+            WS_EX_NOACTIVATE = 0x08000000
+            WS_EX_TOOLWINDOW = 0x00000080
+            hwnd = self._win.winfo_id()
+            cur  = ctypes.windll.user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+            ctypes.windll.user32.SetWindowLongW(
+                hwnd, GWL_EXSTYLE,
+                cur | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW)
+            ctypes.windll.user32.SetWindowPos(
+                hwnd, HWND_TOPMOST, 0, 0, 0, 0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW)
+        except Exception:
+            pass
+
     def show(self, name, color, volume, muted, scale=1.0):
         if self._win is None or not self._win.winfo_exists():
             self._win=tk.Toplevel(self._root)
             self._win.overrideredirect(True)
-            self._win.attributes("-topmost",True)
-            self._win.attributes("-alpha",0.92)
+            self._win.attributes("-topmost", True)
+            self._win.attributes("-alpha", 0.92)
             self._win.configure(bg="#12121e")
+            # Apply Win32 flags so it shows over fullscreen games
+            self._win.after(10, self._force_topmost)
         for w in self._win.winfo_children(): w.destroy()
         text = "MUTED" if muted else f"{int(volume)}%"
         fg   = "#ff6b6b" if muted else color
-        pad  = max(8,int(16*scale))
-        fsz  = max(10,int(28*scale))
-        nsz  = max(8,int(9*scale))
-        bw   = max(60,int(140*scale))
+        pad  = max(8, int(16*scale))
+        fsz  = max(10, int(28*scale))
+        nsz  = max(8, int(9*scale))
+        bw   = max(60, int(140*scale))
         f=tk.Frame(self._win,bg="#12121e",padx=pad,pady=max(8,int(10*scale))); f.pack()
         tk.Label(f,text=name,font=("Segoe UI",nsz),fg="#888",bg="#12121e").pack()
         tk.Label(f,text=text,font=("Segoe UI",fsz,"bold"),fg=fg,bg="#12121e").pack()
@@ -1253,8 +1388,10 @@ class VolumeOverlay:
         ww=self._win.winfo_width();       wh=self._win.winfo_height()
         self._win.geometry(f"+{sw-ww-20}+{sh-wh-60}")
         self._win.deiconify()
+        # Re-assert topmost on every show so it stays above the game
+        self._win.after(10, self._force_topmost)
         if self._job: self._root.after_cancel(self._job)
-        self._job=self._root.after(2000,self._hide)
+        self._job=self._root.after(2000, self._hide)
 
     def _hide(self):
         if self._win and self._win.winfo_exists(): self._win.withdraw()
@@ -1298,8 +1435,30 @@ class MicOverlay:
         self._canvas.bind("<ButtonPress-1>",   self._ds)
         self._canvas.bind("<B1-Motion>",       self._dm)
         self._canvas.bind("<ButtonRelease-1>", self._de)
-        # Apply click-through based on locked state
         self._win.after(50, self._apply_clickthrough)
+        self._win.after(60, self._force_topmost_mic)
+
+    def _force_topmost_mic(self):
+        """Force mic overlay above fullscreen games without stealing focus."""
+        try:
+            HWND_TOPMOST   = -1
+            SWP_NOMOVE     = 0x0002
+            SWP_NOSIZE     = 0x0001
+            SWP_NOACTIVATE = 0x0010
+            SWP_SHOWWINDOW = 0x0040
+            GWL_EXSTYLE    = -20
+            WS_EX_NOACTIVATE = 0x08000000
+            WS_EX_TOOLWINDOW = 0x00000080
+            hwnd = self._win.winfo_id()
+            cur  = ctypes.windll.user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+            ctypes.windll.user32.SetWindowLongW(
+                hwnd, GWL_EXSTYLE,
+                cur | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW)
+            ctypes.windll.user32.SetWindowPos(
+                hwnd, HWND_TOPMOST, 0, 0, 0, 0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW)
+        except Exception:
+            pass
 
     def _render(self):
         sz    = max(20, self._cfg.get("mic_icon_size",40))
@@ -1706,7 +1865,7 @@ class SettingsWin(tk.Toplevel):
         import webbrowser
         f_about = tk.Frame(sc, bg=BG); f_about.pack(fill="x", padx=16, pady=4)
         tk.Label(f_about,
-                 text="Free per-app volume control for keyboard knobs. Lightweight, no background processes.",
+                 text=f"\u00a9 2026 KnobMixer. Free per-app volume control for keyboard knobs.",
                  font=("Segoe UI", 8), fg=SUBTEXT, bg=BG,
                  justify="left").pack(anchor="w")
         f_links = tk.Frame(sc, bg=BG); f_links.pack(fill="x", padx=16, pady=(0,8))
@@ -2401,8 +2560,8 @@ class App:
     # ── Helpers ───────────────────────────────────────────────────────────────
     def _vt(self,g): return "Muted" if g.get("muted") else f"{int(g.get('volume',80))}%"
     def _at(self,g):
-        if g.get("foreground_mode") and not g.get("apps"): return "Foreground mode — active app"
-        apps=g.get("apps",[]); return (", ".join(apps[:6])+(f" +{len(apps)-6} more" if len(apps)>6 else "")) if apps else "No apps — click Edit"
+        if g.get("master_volume"): return ""
+        apps=g.get("apps",[]); return (", ".join(apps[:6])+(f" +{len(apps)-6} more" if len(apps)>6 else "")) if apps else "No apps — click Edit to add"
 
     def _mk_slider(self,group,vol_var,lbl,color):
         def _cmd(val):
@@ -2612,7 +2771,9 @@ class App:
                 self.overlay.show(g["name"],g.get("color","#888"),
                                   g["volume"],g.get("muted",False),
                                   self.cfg.get("overlay_size",1.0)))
-        self.root.after(0,self._sync)
+        # Sync UI immediately + again after 150ms for master vol readback
+        self.root.after(0, self._sync)
+        self.root.after(150, self._sync)
 
     def _sync(self):
         for g,w in zip(self.cfg["groups"],self._group_widgets):
@@ -2701,57 +2862,99 @@ class AppsDialog(tk.Toplevel):
         self.group=group; self.apps_lbl=apps_lbl
         self.summary_fn=summary_fn; self.save_fn=save_fn
         self.title(f"Apps — {group.get('name','Group')}")
-        self.configure(bg=BG); self.geometry("440x440")
-        self.resizable(False,True); self.grab_set(); self._build()
+        self.configure(bg=BG); self.geometry("460x520")
+        self.resizable(True,True); self.grab_set(); self._build()
 
     def _build(self):
-        self._fg=tk.BooleanVar(value=self.group.get("foreground_mode",False))
-        ff=tk.Frame(self,bg=PANEL,pady=8); ff.pack(fill="x",padx=12,pady=(12,0))
-        tk.Checkbutton(ff,text="Foreground mode (controls active/focused app)",
-                       variable=self._fg,font=("Segoe UI",10),fg=TEXT,bg=PANEL,
-                       selectcolor=BG,activebackground=PANEL,activeforeground=TEXT,
-                       command=self._tfg).pack(anchor="w",padx=10)
-        tk.Label(ff,text="Best for games — no need to list apps manually.",
-                 font=("Segoe UI",8),fg=SUBTEXT,bg=PANEL).pack(anchor="w",padx=30)
-        tk.Frame(self,bg=BORDER,height=1).pack(fill="x",padx=12,pady=6)
+        # ── Top: manual text entry ────────────────────────────────────────────
         tk.Label(self,text="App process names, one per line (no .exe):",
-                 font=("Segoe UI",9),fg=TEXT,bg=BG).pack(padx=12,anchor="w")
+                 font=("Segoe UI",9),fg=TEXT,bg=BG).pack(padx=12,pady=(12,4),anchor="w")
         self._txt=tk.Text(self,font=("Consolas",9),bg=PANEL,fg=TEXT,
-                          insertbackground=TEXT,relief="flat",height=7,
-                          padx=6,pady=6,
-                          state="disabled" if self._fg.get() else "normal")
-        self._txt.pack(fill="x",padx=12,pady=(2,0))
-        if not self._fg.get(): self._txt.insert("1.0","\n".join(self.group.get("apps",[])))
-        tk.Label(self,text="Currently making sound — click to add:",
-                 font=("Segoe UI",8),fg=SUBTEXT,bg=BG).pack(padx=12,anchor="w",pady=(6,2))
-        self._rf=tk.Frame(self,bg=BG); self._rf.pack(fill="x",padx=12)
-        self._refresh_r()
-        bf=tk.Frame(self,bg=BG); bf.pack(fill="x",padx=12,pady=10)
-        tk.Button(bf,text="Save",font=("Segoe UI",10,"bold"),bg="#1DB954",fg="white",
-                  relief="flat",cursor="hand2",padx=18,pady=4,command=self._save).pack(side="left")
-        tk.Button(bf,text="Cancel",font=("Segoe UI",10),bg=BORDER,fg=TEXT,
-                  relief="flat",cursor="hand2",padx=12,pady=4,command=self.destroy).pack(side="left",padx=6)
+                          insertbackground=TEXT,relief="flat",height=6,
+                          padx=6,pady=6)
+        self._txt.pack(fill="x",padx=12)
+        self._txt.insert("1.0","\n".join(self.group.get("apps",[])))
 
-    def _tfg(self): self._txt.config(state="disabled" if self._fg.get() else "normal")
+        # ── Middle: all running audio apps in a scrollable area ───────────────
+        hdr=tk.Frame(self,bg=BG); hdr.pack(fill="x",padx=12,pady=(8,2))
+        tk.Label(hdr,text="Currently making sound — click to add:",
+                 font=("Segoe UI",8),fg=SUBTEXT,bg=BG).pack(side="left")
+        tk.Button(hdr,text="↻ Refresh",font=("Segoe UI",7),bg=BORDER,fg=SUBTEXT,
+                  relief="flat",cursor="hand2",padx=4,pady=1,
+                  command=self._refresh_r).pack(side="right")
+
+        # Scrollable canvas for running apps — shows ALL of them
+        rf_outer=tk.Frame(self,bg=PANEL,highlightthickness=1,
+                          highlightbackground=BORDER)
+        rf_outer.pack(fill="both",expand=True,padx=12,pady=(0,4))
+
+        self._canvas=tk.Canvas(rf_outer,bg=PANEL,highlightthickness=0,
+                               height=160)
+        sb=tk.Scrollbar(rf_outer,orient="vertical",command=self._canvas.yview)
+        self._canvas.configure(yscrollcommand=sb.set)
+        self._canvas.pack(side="left",fill="both",expand=True)
+        sb.pack(side="right",fill="y")
+
+        self._rf=tk.Frame(self._canvas,bg=PANEL)
+        self._cwin=self._canvas.create_window((0,0),window=self._rf,anchor="nw")
+        self._rf.bind("<Configure>",lambda e:(
+            self._canvas.configure(scrollregion=self._canvas.bbox("all")),
+            self._canvas.itemconfig(self._cwin,width=self._canvas.winfo_width())))
+        self._canvas.bind("<Configure>",lambda e:
+            self._canvas.itemconfig(self._cwin,width=e.width))
+        self._canvas.bind("<MouseWheel>",lambda e:
+            self._canvas.yview_scroll(int(-1*e.delta/120),"units"))
+
+        self._refresh_r()
+
+        # ── Bottom: save/cancel ───────────────────────────────────────────────
+        bf=tk.Frame(self,bg=BG); bf.pack(fill="x",padx=12,pady=(4,10))
+        tk.Button(bf,text="Save",font=("Segoe UI",10,"bold"),bg="#1DB954",fg="white",
+                  relief="flat",cursor="hand2",padx=18,pady=4,
+                  command=self._save).pack(side="left")
+        tk.Button(bf,text="Cancel",font=("Segoe UI",10),bg=BORDER,fg=TEXT,
+                  relief="flat",cursor="hand2",padx=12,pady=4,
+                  command=self.destroy).pack(side="left",padx=6)
+
     def _refresh_r(self):
         for w in self._rf.winfo_children(): w.destroy()
         apps=running_audio_apps()
+        already=[l.strip() for l in self._txt.get("1.0","end").splitlines() if l.strip()]
         if not apps:
-            tk.Label(self._rf,text="(none detected)",font=("Segoe UI",8),fg=SUBTEXT,bg=BG).pack(anchor="w"); return
-        row=tk.Frame(self._rf,bg=BG); row.pack(anchor="w")
-        for a in apps:
-            b=tk.Button(row,text=f"+ {a}",font=("Consolas",8),bg=BORDER,fg=TEXT,
-                        activebackground=PANEL,relief="flat",cursor="hand2",padx=5,pady=1)
-            b.pack(side="left",padx=(0,3),pady=2); b.config(command=lambda n=a: self._add(n))
-    def _add(self,name):
-        s=self._txt.cget("state"); self._txt.config(state="normal")
+            tk.Label(self._rf,text="  (no apps making sound right now)",
+                     font=("Segoe UI",8),fg=SUBTEXT,bg=PANEL,
+                     pady=8).pack(anchor="w")
+            return
+        # Wrap buttons into rows of 3
+        cols=3; row_f=None
+        for i,a in enumerate(sorted(apps)):
+            if i % cols == 0:
+                row_f=tk.Frame(self._rf,bg=PANEL)
+                row_f.pack(fill="x",padx=4,pady=1)
+            already_added = a in already
+            btn=tk.Button(row_f,
+                text=f"✓ {a}" if already_added else f"+ {a}",
+                font=("Consolas",8),
+                bg="#1a3a1a" if already_added else BORDER,
+                fg="#1DB954" if already_added else TEXT,
+                activebackground=HOVER,relief="flat",cursor="hand2",
+                padx=6,pady=2,width=14)
+            btn.pack(side="left",padx=(0,4))
+            if not already_added:
+                btn.config(command=lambda n=a,b=btn: self._add(n,b))
+
+    def _add(self,name,btn=None):
         cur=self._txt.get("1.0","end").strip()
         if name not in [l.strip() for l in cur.splitlines() if l.strip()]:
             self._txt.insert("end",f"\n{name}" if cur else name)
-        self._txt.config(state=s)
+        if btn:
+            btn.config(text=f"✓ {name}",bg="#1a3a1a",fg="#1DB954",
+                       command=lambda:None)
+
     def _save(self):
-        lines=[l.strip().lower() for l in self._txt.get("1.0","end").splitlines() if l.strip()]
-        self.group["apps"]=lines; self.group["foreground_mode"]=self._fg.get()
+        lines=[l.strip().lower() for l in
+               self._txt.get("1.0","end").splitlines() if l.strip()]
+        self.group["apps"]=lines
         self.apps_lbl.config(text=self.summary_fn(self.group))
         self.save_fn(); self.destroy()
 
@@ -2876,6 +3079,24 @@ def _should_check_update_this_week():
     return True
 
 if __name__=="__main__":
+    # ── Single instance check ─────────────────────────────────────────────────
+    import ctypes
+    _mutex = ctypes.windll.kernel32.CreateMutexW(None, True, "KnobMixer_SingleInstance")
+    if ctypes.windll.kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
+        # Already running — bring existing window to front
+        import ctypes.wintypes
+        def _enum(hwnd, _):
+            buf = ctypes.create_unicode_buffer(256)
+            ctypes.windll.user32.GetWindowTextW(hwnd, buf, 256)
+            if "KnobMixer" in buf.value:
+                ctypes.windll.user32.ShowWindow(hwnd, 9)   # SW_RESTORE
+                ctypes.windll.user32.SetForegroundWindow(hwnd)
+                return False
+            return True
+        WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.wintypes.HWND, ctypes.wintypes.LPARAM)
+        ctypes.windll.user32.EnumWindows(WNDENUMPROC(_enum), 0)
+        raise SystemExit(0)
+
     _ping_analytics()
     app = App()
     # Weekly silent update check — no popups, just updates the button label
