@@ -1,5 +1,5 @@
 """
-KnobMixer v2.5
+KnobMixer v2.6
 Free per-app volume control for keyboard knobs and hotkeys.
 https://github.com/KnobMixer/KnobMixer
 """
@@ -297,7 +297,7 @@ _HOOK = GlobalHookManager()
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 APP_NAME    = "KnobMixer"
-APP_VER     = "2.5"
+APP_VER     = "2.6"
 APPDATA_DIR = Path(os.getenv("APPDATA",".")) / APP_NAME
 APPDATA_DIR.mkdir(parents=True, exist_ok=True)
 CONFIG_FILE = APPDATA_DIR / "config.json"
@@ -1653,9 +1653,9 @@ class HotkeyEngine:
             _HOOK.register("volume down", _hw_down, suppress=True, is_media=True, debounce=0.02)
             _HOOK.register("volume mute", _hw_mute, suppress=True, is_media=True, debounce=0.30)
 
-        # Cycle key (both modes)
+        # Cycle key — only active in 1-knob mode or when hardware knob is enabled
         ck = cfg.get("cycle_key","").strip()
-        if ck and on_switch:
+        if ck and on_switch and (mode == "single" or cfg.get("hw_knob_enabled",False)):
             def _cycle(c=cfg, os=on_switch):
                 gs = [g for g in c["groups"] if g.get("enabled",True)]
                 if not gs: return
@@ -1846,9 +1846,9 @@ class SettingsWin(tk.Toplevel):
         nb.pack(fill="both", expand=True, padx=8, pady=(8, 0))
 
         self._build_general(nb)
-        self._build_slowdown(nb)
         self._build_single(nb)
         self._build_mic(nb)
+        self._build_howto(nb)
 
         bar = tk.Frame(self, bg=PANEL, pady=8)
         bar.pack(fill="x", pady=(4, 0))
@@ -1859,6 +1859,47 @@ class SettingsWin(tk.Toplevel):
                   padx=14, pady=5, command=self.destroy).pack(side="right", padx=12)
 
     # ── General tab ──────────────────────────────────────────────────────────
+    def _build_howto(self, nb):
+        sc = self._make_tab(nb, "How To Use")
+        howto = """Step 1 — Program your keyboard
+Open your keyboard software and set your knob keys to:
+  • Knob left  →  F13  (Vol-)
+  • Knob right →  F14  (Vol+)
+  • Knob click →  F15  (Mute)
+Skip this step if your knob cannot be remapped.
+
+Step 2 — Choose your mode
+  • Multiple Knobs — each group has its own hotkeys.
+    Best if you have 2 or more knobs.
+  • 1-Knob — one knob controls all groups.
+    Press a key to switch between groups.
+
+Step 3 — Set your hotkeys
+Assign the hotkeys from Step 1 to your groups.
+Each group controls a set of apps you choose.
+In 1-Knob mode, set the shared keys above the groups.
+
+Step 4 — Add your apps
+Click Edit on each group and add the apps you want
+it to control (e.g. spotify, discord, your game name).
+When an app is open it appears in the list for easy adding.
+
+Hardware knob that can't be remapped? (e.g. AULAF75)
+Enable Hardware Knob in Settings → 1-Knob Mode.
+KnobMixer intercepts the system volume keys and
+redirects them to your active group instead.
+
+No knob? No problem.
+KnobMixer works with any hotkey or key combination."""
+
+        txt = tk.Text(sc, font=("Segoe UI", 9), fg=TEXT, bg=BG,
+                      relief="flat", padx=16, pady=12,
+                      wrap="word", cursor="arrow",
+                      state="normal", height=28)
+        txt.insert("1.0", howto)
+        txt.config(state="disabled")
+        txt.pack(fill="both", expand=True, padx=0, pady=0)
+
     def _build_general(self, nb):
         sc = self._make_tab(nb, "General")
 
@@ -1909,25 +1950,29 @@ class SettingsWin(tk.Toplevel):
                       f"https://github.com/{GITHUB_REPO}/issues" if GITHUB_REPO
                       else "mailto:your@email.com")).pack(side="left")
 
-    # ── Slowdown tab ─────────────────────────────────────────────────────────
-    def _build_slowdown(self, nb):
-        sc = self._make_tab(nb, "Slowdown Zone")
-
-        self._v_sden  = tk.BooleanVar(value=self.cfg.get("slowdown_enabled", True))
-        self._v_sdthr = tk.DoubleVar(value=self.cfg.get("slowdown_threshold", 10))
-        self._v_sdstp = tk.DoubleVar(value=self.cfg.get("slowdown_step", 0.5))
-
-        tk.Label(sc, text="When volume drops below the threshold, steps switch to a finer amount for precise quiet control.",
-                 font=("Segoe UI", 9), fg=SUBTEXT, bg=BG,
-                 justify="left").pack(padx=16, pady=(12, 4), anchor="w")
-
-        self._sep(sc)
-        self._row(sc, "Enable slowdown zone",
-                  lambda p: self._chk(p, self._v_sden).pack(side="left"))
-        self._row(sc, "Trigger below (%) threshold",
-                  lambda p: self._sld(p, self._v_sdthr, 1, 40, 1).pack(side="left"))
-        self._row(sc, "Fine step size (%)",
-                  lambda p: self._sld(p, self._v_sdstp, 0.1, 5.0, 0.1).pack(side="left"))
+        self._sep(sc, "Reset All Keybinds")
+        tk.Label(sc, text="Clears all hotkeys in every group, mic toggle, and shared keys.",
+                 font=("Segoe UI", 8), fg=SUBTEXT, bg=BG,
+                 wraplength=420, justify="left").pack(padx=16, pady=(4,6), anchor="w")
+        f_reset = tk.Frame(sc, bg=BG); f_reset.pack(fill="x", padx=16, pady=(0,8))
+        def _reset_keybinds():
+            import tkinter.messagebox as _mb
+            if not _mb.askyesno("Reset Keybinds",
+                    "Clear ALL hotkeys?\nThis cannot be undone.",
+                    parent=self): return
+            for g in self.cfg.get("groups",[]):
+                g["keys"] = {"vol_down":"","vol_up":"","mute":""}
+                g["single_key"] = ""
+            self.cfg["single_keys"] = {"vol_down":"","vol_up":"","mute":""}
+            self.cfg["cycle_key"]   = ""
+            self.cfg["mic_hotkey"]  = ""
+            self._apply()
+            _mb.showinfo("KnobMixer","All keybinds cleared.", parent=self)
+        tk.Button(f_reset, text="Reset All Keybinds",
+                  font=("Segoe UI", 9), bg="#3a1a1a", fg="#ff6b6b",
+                  activebackground="#4a2020", activeforeground="#ff9999",
+                  relief="flat", cursor="hand2", padx=12, pady=5,
+                  command=_reset_keybinds).pack(side="left")
 
     # ── 1-Knob tab ───────────────────────────────────────────────────────────
     def _build_single(self, nb):
@@ -1975,63 +2020,10 @@ class SettingsWin(tk.Toplevel):
         self._row(sc, "Enable hardware knob intercept",
                   lambda p: self._chk(p, self._v_hw_en).pack(side="left"))
 
-        self._sep(sc, "Reset All Keybinds")
         tk.Label(sc,
-                 text="Clears all hotkeys in every group, mic toggle, and shared keys. Useful for a fresh start.",
+                 text="Volume keys and Cycle key are set on the main window above the groups.",
                  font=("Segoe UI", 8), fg=SUBTEXT, bg=BG,
-                 justify="left").pack(padx=16, pady=(4,6), anchor="w")
-        f_reset = tk.Frame(sc, bg=BG); f_reset.pack(fill="x", padx=16, pady=(0,8))
-        def _reset_keybinds():
-            import tkinter.messagebox as _mb
-            if not _mb.askyesno("Reset Keybinds",
-                    "Clear ALL hotkeys?\nThis cannot be undone.",
-                    parent=self): return
-            for g in self.cfg.get("groups",[]):
-                g["keys"] = {"vol_down":"","vol_up":"","mute":""}
-                g["single_key"] = ""
-            self.cfg["single_keys"] = {"vol_down":"","vol_up":"","mute":""}
-            self.cfg["cycle_key"]   = ""
-            self.cfg["mic_hotkey"]  = ""
-            self._apply()
-            _mb.showinfo("KnobMixer","All keybinds cleared.", parent=self)
-        tk.Button(f_reset, text="Reset All Keybinds",
-                  font=("Segoe UI", 9), bg="#3a1a1a", fg="#ff6b6b",
-                  activebackground="#4a2020", activeforeground="#ff9999",
-                  relief="flat", cursor="hand2", padx=12, pady=5,
-                  command=_reset_keybinds).pack(side="left")
-
-        self._sep(sc, "Group Cycle Key")
-        tk.Label(sc, text="Press this key to cycle through all enabled groups. Works in both modes. Popup shows active group name.",
-                 font=("Segoe UI", 8), fg=SUBTEXT, bg=BG,
-                 justify="left").pack(padx=16, pady=(4, 6), anchor="w")
-
-        cur_ck = self.cfg.get("cycle_key", "")
-        def _ck_cb(hk):
-            self.cfg["cycle_key"] = hk
-            self._apply()
-        f_ck = tk.Frame(sc, bg=BG)
-        f_ck.pack(fill="x", padx=16, pady=4)
-        tk.Label(f_ck, text="Cycle key", font=("Segoe UI", 9), fg=TEXT,
-                 bg=BG, width=28, anchor="w").pack(side="left")
-        make_hotkey_btn(f_ck, cur_ck, _ck_cb).pack(side="left")
-
-        self._sep(sc, "Shared Volume Keys (1-Knob Mode)")
-        tk.Label(sc, text="Click a button then press your key (combos supported).",
-                 font=("Segoe UI", 8), fg=SUBTEXT, bg=BG).pack(padx=16, anchor="w")
-
-        sk = self.cfg.setdefault("single_keys", {"vol_down": "", "vol_up": "", "mute": ""})
-        for action, lbl in [("vol_down", "Vol-  (quieter)"),
-                             ("vol_up",   "Vol+  (louder)"),
-                             ("mute",     "Volume Mute toggle")]:
-            cur = sk.get(action, "")
-            def _cb(hk, a=action):
-                self.cfg["single_keys"][a] = hk
-                self._apply()
-            f = tk.Frame(sc, bg=BG)
-            f.pack(fill="x", padx=16, pady=4)
-            tk.Label(f, text=lbl, font=("Segoe UI", 9), fg=TEXT,
-                     bg=BG, width=28, anchor="w").pack(side="left")
-            make_hotkey_btn(f, cur, _cb).pack(side="left")
+                 wraplength=420).pack(padx=16, pady=(8,4), anchor="w")
 
     # ── Mic tab ──────────────────────────────────────────────────────────────
     def _build_mic(self, nb):
@@ -2197,9 +2189,9 @@ class App:
         self.overlay=VolumeOverlay(self.root)
         self.mic_ov=None
         self._build_ui()
-        self._init_single()
         _HOOK.start()
-        self.hk.reload(self.cfg,self._on_vol,self._on_switch)
+        self._init_single()   # sets _active_group_ref first
+        self.hk.reload(self.cfg,self._on_vol,self._on_switch)  # then registers keys
         self._reg_mic_hk()
 
         if self.cfg.get("mic_enabled",True):
@@ -2283,6 +2275,28 @@ class App:
                                    fg=SUBTEXT,bg="#111118")
         self._timeout_lbl.pack(side="right",padx=14)
         if self.cfg.get("mode")=="single": self._sb.pack(fill="x")
+
+        # 1-Knob key panel — shown above groups in 1-knob mode only
+        self._knob_panel = tk.Frame(self.root, bg=PANEL, pady=6)
+        kp = self._knob_panel
+        tk.Label(kp, text="1-Knob Keys:", font=("Segoe UI",8), fg=SUBTEXT,
+                 bg=PANEL).pack(side="left", padx=(12,6))
+        sk = self.cfg.setdefault("single_keys", {"vol_down":"","vol_up":"","mute":""})
+        for action, lbl in [("vol_down","Vol-"), ("vol_up","Vol+"), ("mute","Mute")]:
+            tk.Label(kp, text=lbl, font=("Segoe UI",8), fg=SUBTEXT,
+                     bg=PANEL).pack(side="left", padx=(4,1))
+            def _cb(hk, a=action):
+                self.cfg["single_keys"][a] = hk
+                self._autosave()
+            make_hotkey_btn(kp, sk.get(action,""), _cb).pack(side="left", padx=(0,4))
+        tk.Label(kp, text="Cycle:", font=("Segoe UI",8), fg=SUBTEXT,
+                 bg=PANEL).pack(side="left", padx=(8,1))
+        def _ck_cb(hk):
+            self.cfg["cycle_key"] = hk
+            self._autosave()
+        make_hotkey_btn(kp, self.cfg.get("cycle_key",""), _ck_cb).pack(side="left", padx=(0,4))
+        if self.cfg.get("mode") == "single":
+            self._knob_panel.pack(fill="x")
 
         # Groups — scrollable canvas with minimal auto-hide scrollbar
         cf=tk.Frame(self.root,bg=BG); cf.pack(fill="both",expand=True)
@@ -2656,8 +2670,12 @@ class App:
         self._init_single()
         self.hk.reload(self.cfg,self._on_vol,self._on_switch)
         self._redraw()
-        if self.cfg["mode"]=="single": self._sb.pack(fill="x",after=self.root.children.get("!frame3",self._sb))
-        else: self._sb.pack_forget()
+        if self.cfg["mode"]=="single":
+            self._sb.pack(fill="x")
+            self._knob_panel.pack(fill="x")
+        else:
+            self._sb.pack_forget()
+            self._knob_panel.pack_forget()
         self._autosave()
 
     def _init_single(self):
