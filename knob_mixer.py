@@ -1907,6 +1907,9 @@ KnobMixer works with any hotkey or key combination."""
         self._v_startup  = tk.BooleanVar(value=get_startup())
         self._v_overlay  = tk.BooleanVar(value=self.cfg.get("show_overlay", True))
         self._v_ovsize   = tk.DoubleVar(value=self.cfg.get("overlay_size", 1.0))
+        self._v_sden     = tk.BooleanVar(value=self.cfg.get("slowdown_enabled", True))
+        self._v_sdthr    = tk.DoubleVar(value=self.cfg.get("slowdown_threshold", 10))
+        self._v_sdstp    = tk.DoubleVar(value=self.cfg.get("slowdown_step", 0.5))
 
         self._sep(sc, "App Behaviour")
         self._row(sc, "Start minimized to tray",
@@ -1919,6 +1922,18 @@ KnobMixer works with any hotkey or key combination."""
                   lambda p: self._chk(p, self._v_overlay).pack(side="left"))
         self._row(sc, "Popup size",
                   lambda p: self._sld(p, self._v_ovsize, 0.5, 2.0, 0.1).pack(side="left"))
+
+        self._sep(sc, "Slowdown Zone")
+        tk.Label(sc,
+                 text="When volume drops below the threshold, use a finer step for precise quiet control.",
+                 font=("Segoe UI", 8), fg=SUBTEXT, bg=BG,
+                 wraplength=420, justify="left").pack(padx=16, pady=(4,6), anchor="w")
+        self._row(sc, "Enable slowdown zone",
+                  lambda p: self._chk(p, self._v_sden).pack(side="left"))
+        self._row(sc, "Trigger below (%) threshold",
+                  lambda p: self._sld(p, self._v_sdthr, 1, 40, 1).pack(side="left"))
+        self._row(sc, "Fine step size (%)",
+                  lambda p: self._sld(p, self._v_sdstp, 0.1, 5.0, 0.1).pack(side="left"))
 
         self._sep(sc, "Privacy")
         self._v_analytics = tk.BooleanVar(value=self.cfg.get("analytics_enabled", True))
