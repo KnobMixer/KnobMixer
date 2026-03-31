@@ -1,16 +1,7 @@
 """
-KnobMixer v2.4
-All fixes applied:
-- Instant autosave on every change
-- Inline hotkey capture (no popup, supports combos, 2s listen window)
-- Scrollable group cards so nothing is cut off
-- Mic icon: click-through, transparency slider, mute-slash inside circle
-- Mic sounds: short, two distinct tones, no queuing
-- Sound picker with live preview, stays open
-- Mic icon style chooser (multiple icons incl. fun ones)
-- Labels on hotkey buttons (Vol-, Vol+, Vol Mute)
-- Settings stays open on Apply
-- BUILD fix: pyinstaller via python -m PyInstaller
+KnobMixer v2.5
+Free per-app volume control for keyboard knobs and hotkeys.
+https://github.com/KnobMixer/KnobMixer
 """
 
 import sys, os, json, threading, winreg, ctypes, time, math, struct, wave, io, copy
@@ -306,7 +297,7 @@ _HOOK = GlobalHookManager()
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 APP_NAME    = "KnobMixer"
-APP_VER     = "2.4"
+APP_VER     = "2.5"
 APPDATA_DIR = Path(os.getenv("APPDATA",".")) / APP_NAME
 APPDATA_DIR.mkdir(parents=True, exist_ok=True)
 CONFIG_FILE = APPDATA_DIR / "config.json"
@@ -733,6 +724,25 @@ def _calc_vol(current, delta, cfg):
         if delta > 0 and current < thr:
             return min(100.0, current + fine)
     return max(0.0, min(100.0, current + delta))
+
+def _read_actual_vol(group):
+    """Read the actual current volume of a group's apps from Windows.
+    Returns 0-100 float, or None if no matching app is running.
+    Used to sync the group volume before first knob turn after switching games."""
+    try:
+        comtypes.CoInitialize()
+        apps = group.get("apps", [])
+        if not apps: return None
+        sess = _sessions()
+        for app in apps:
+            vcs = sess.get(app.lower(), [])
+            for vc in vcs:
+                try:
+                    vol = vc.GetMasterVolume()
+                    return round(vol * 100)
+                except: pass
+    except: pass
+    return None
 
 def apply_vol(group, cfg):
     if not group.get("enabled", True): return
@@ -1540,6 +1550,11 @@ class HotkeyEngine:
                 def mk_vol(grp, delta):
                     def _():
                         if not grp.get("enabled",True): return
+                        # Sync from Windows before calculating — handles switching
+                        # between games (e.g. Tarkov at 20% → Overwatch at 100%)
+                        actual = _read_actual_vol(grp)
+                        if actual is not None and abs(actual - grp["volume"]) > 3:
+                            grp["volume"] = actual  # snap to real Windows volume
                         grp["volume"] = _calc_vol(grp["volume"], delta, cfg)
                         grp["muted"]  = False
                         apply_vol(grp, cfg); on_vol(grp)
@@ -1579,11 +1594,17 @@ class HotkeyEngine:
             def _up():
                 ag = ref.get("_active_group_ref")
                 if ag and ag.get("enabled",True):
+                    actual = _read_actual_vol(ag)
+                    if actual is not None and abs(actual - ag["volume"]) > 3:
+                        ag["volume"] = actual
                     ag["volume"]=_calc_vol(ag["volume"],ag.get("step",5),ref)
                     ag["muted"]=False; apply_vol(ag,ref); on_vol(ag)
             def _dn():
                 ag = ref.get("_active_group_ref")
                 if ag and ag.get("enabled",True):
+                    actual = _read_actual_vol(ag)
+                    if actual is not None and abs(actual - ag["volume"]) > 3:
+                        ag["volume"] = actual
                     ag["volume"]=_calc_vol(ag["volume"],-ag.get("step",5),ref)
                     ag["muted"]=False; apply_vol(ag,ref); on_vol(ag)
             def _mu():
@@ -1606,12 +1627,18 @@ class HotkeyEngine:
             def _hw_up():
                 g = cfg.get("_active_group_ref")
                 if not g or not g.get("enabled",True): return
+                actual = _read_actual_vol(g)
+                if actual is not None and abs(actual - g["volume"]) > 3:
+                    g["volume"] = actual
                 g["volume"]=_calc_vol(g["volume"], g.get("step",5), cfg)
                 g["muted"]=False; apply_vol(g,cfg); on_vol(g)
 
             def _hw_down():
                 g = cfg.get("_active_group_ref")
                 if not g or not g.get("enabled",True): return
+                actual = _read_actual_vol(g)
+                if actual is not None and abs(actual - g["volume"]) > 3:
+                    g["volume"] = actual
                 g["volume"]=_calc_vol(g["volume"], -g.get("step",5), cfg)
                 g["muted"]=False; apply_vol(g,cfg); on_vol(g)
 
