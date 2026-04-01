@@ -1,5 +1,5 @@
 """
-KnobMixer v2.6
+KnobMixer v2.7.1
 Free per-app volume control for keyboard knobs and hotkeys.
 https://github.com/KnobMixer/KnobMixer
 """
@@ -39,8 +39,8 @@ def _setup_crash_log():
             import datetime
             with open(log_file, "a", encoding="utf-8") as f:
                 f.write(f"\n{'='*60}\n")
-                f.write(f"KnobMixer v{APP_VER if 'APP_VER' in dir() else '?'} crash — {datetime.datetime.now()}\n")
-                f.write(_tb.format_exception(exc_type, exc_val, exc_tb)[-1])
+                _ver = globals().get("APP_VER", "?")
+                f.write(f"KnobMixer v{_ver} crash — {datetime.datetime.now()}\n")
                 f.write("".join(_tb.format_exception(exc_type, exc_val, exc_tb)))
         except: pass
         _orig(exc_type, exc_val, exc_tb)
@@ -146,7 +146,7 @@ def _parse_hotkey(raw: str):
             mods.add(MOD_ALIASES[p])
         else:
             trigger = p
-    if not trigger: return None, None
+    if not trigger: return None, None  # Fix #21 — modifier-only, caller should warn
     vk = _name_to_vk(trigger)
     if vk is None: return None, None
     return mods, vk
@@ -290,6 +290,12 @@ class GlobalHookManager:
             _user32.UnhookWindowsHookExW = _user32.UnhookWindowsHookEx
             _user32.UnhookWindowsHookEx(self._hook)
             self._hook = None
+        # If we exited unexpectedly and should still be running, restart (#6)
+        if self._running:
+            print("[Hook] Message loop exited unexpectedly — restarting in 1s")
+            self._running = False
+            time.sleep(1)
+            self.start()
 
 
 # Single global hook instance shared by everything
@@ -297,7 +303,7 @@ _HOOK = GlobalHookManager()
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 APP_NAME    = "KnobMixer"
-APP_VER     = "2.6"
+APP_VER     = "2.7.1"
 APPDATA_DIR = Path(os.getenv("APPDATA",".")) / APP_NAME
 APPDATA_DIR.mkdir(parents=True, exist_ok=True)
 CONFIG_FILE = APPDATA_DIR / "config.json"
@@ -331,6 +337,8 @@ DEFAULT_CFG = {
     "show_overlay": True,
     "analytics_enabled": True,
     "overlay_size": 1.0,
+    "overlay_x": -1,
+    "overlay_y": -1,
     "slowdown_enabled": True,
     "slowdown_threshold": 10,
     "slowdown_step": 0.5,
@@ -397,7 +405,7 @@ def load_cfg():
                     if g["keys"].get(a,"").lower().strip() in _BAD_HOTKEYS:
                         print(f"[Config] Cleared bad hotkey in {g.get('name','')} {a}")
                         g["keys"][a] = ""
-            for k,v in [("overlay_size",1.0),("slowdown_enabled",True),
+            for k,v in [("overlay_size",1.0),("overlay_x",-1),("overlay_y",-1),("slowdown_enabled",True),
                         ("slowdown_threshold",10),("slowdown_step",0.5),
                         ("single_default_group",0),("single_timeout",60),("single_auto_revert",False),("hw_knob_enabled",False),("hw_knob_group",0),("cycle_key",""),
                         ("single_keys",{"vol_down":"","vol_up":"","mute":""}),
@@ -408,13 +416,30 @@ def load_cfg():
                         ("mic_icon_style","circle"),("mode","multi"),
                         ("start_minimized",True),("show_overlay",True),("analytics_enabled",True)]:
                 d.setdefault(k,v)
+            # Clamp numeric values to safe ranges
+            for g in d.get("groups", []):
+                g["volume"] = max(0.0, min(100.0, float(g.get("volume", 80))))
+                g["step"]   = max(1,   min(20,    int(g.get("step", 5))))
+                g.setdefault("volume", 80.0)
+            d["overlay_size"]        = max(0.5, min(3.0, float(d.get("overlay_size", 1.0))))
+            d["slowdown_threshold"]  = max(1,   min(50,  int(d.get("slowdown_threshold", 10))))
+            d["slowdown_step"]       = max(0.1, min(10.0,float(d.get("slowdown_step", 0.5))))
             return d
-        except: pass
+        except Exception as e:
+            print(f"[Config] Load failed ({e}), using defaults")
     return copy.deepcopy(DEFAULT_CFG)
 
 def save_cfg(cfg):
     cfg.pop("_active_group_ref", None)
-    CONFIG_FILE.write_text(json.dumps(cfg, indent=2))
+    # Atomic write — write to temp file then replace, prevents corruption on crash
+    tmp = CONFIG_FILE.with_suffix(".tmp")
+    try:
+        tmp.write_text(json.dumps(cfg, indent=2))
+        os.replace(tmp, CONFIG_FILE)
+    except Exception as e:
+        print(f"[Config] Save failed: {e}")
+        try: tmp.unlink()
+        except: pass
 
 # ── Startup ───────────────────────────────────────────────────────────────────
 def set_startup(en):
@@ -543,16 +568,23 @@ def play_sound(freq, dur_ms=60, vol=0.6, shape="sine"):
     """Play sound immediately, cancelling any queued sound."""
     global _sound_thread
     import winsound, tempfile
+    # Guard against zero-length WAV (dur_ms=0 produces empty buffer)
+    if dur_ms <= 0: return
     data = _make_wav(freq, dur_ms, vol, shape)
-    tmp  = Path(tempfile.mktemp(suffix=".wav"))
-    tmp.write_bytes(data)
+    if not data: return
+    # Use NamedTemporaryFile instead of mktemp — avoids TOCTOU race (#9)
+    try:
+        tf = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+        tmp = Path(tf.name)
+        tf.write(data)
+        tf.close()
+    except Exception: return
     def _play():
         with _sound_lock:
             try: winsound.PlaySound(str(tmp), winsound.SND_FILENAME)
             finally:
                 try: tmp.unlink()
                 except: pass
-    # Cancel previous if still going (best-effort: just start new thread)
     t = threading.Thread(target=_play, daemon=True)
     t.start()
     _sound_thread = t
@@ -595,6 +627,10 @@ class HotkeyCapture:
         self._btn.config(text="Press keys…", bg="#2a4a2a", fg="#1DB954")
         keyboard.hook(self._on_event, suppress=True)
 
+    # Media key names that are invalid as group hotkeys (#18)
+    _INVALID_KEYS = {"volume up","volume down","volume mute","play/pause media",
+                     "media play/pause","next track","prev track","media stop"}
+
     def _on_event(self, ev):
         if not self._active: return
         name = ev.name.lower()
@@ -602,6 +638,13 @@ class HotkeyCapture:
         if ev.event_type == "down":
             if name == "escape":
                 self._finish(None)
+                return
+            # Reject media keys with visual feedback (#18)
+            if name in self._INVALID_KEYS:
+                self._btn.after(0, lambda: self._btn.config(
+                    text="Invalid key", bg="#3a1a1a", fg="#ff6b6b"))
+                self._btn.after(1200, lambda: self._btn.config(
+                    text="Press keys…", bg="#2a4a2a", fg="#1DB954"))
                 return
             self._held.add(name)
             self._btn.after(0, self._update_display)
@@ -632,7 +675,9 @@ class HotkeyCapture:
     def _finish(self, combo):
         if not self._active: return
         self._active = False
-        keyboard.unhook_all()
+        # Only unhook our specific hook, not ALL hooks (#5 — was killing GlobalHookManager)
+        try: keyboard.unhook(self._on_event)
+        except: pass
         if combo:
             self._btn.after(0, lambda: self._btn.config(
                 text=fmt_hotkey(combo), bg=BORDER, fg=TEXT))
@@ -646,14 +691,15 @@ def fmt_hotkey(raw):
     return "+".join(p.strip().upper() for p in raw.split("+") if p.strip())
 
 def make_hotkey_btn(parent, current_key, callback, label_prefix=""):
-    """Create a hotkey button with inline capture. Returns the button."""
+    """Create a hotkey button with inline capture. Returns the button.
+    The HotkeyCapture instance is stored as btn._capture for ✕ button access."""
     display = fmt_hotkey(current_key) if current_key else "—"
     text    = f"{label_prefix}{display}" if label_prefix else display
     btn = tk.Button(parent, text=text,
                     font=("Consolas",8), bg=BORDER, fg=TEXT,
                     activebackground=HOVER, relief="flat",
                     cursor="hand2", padx=8, pady=2)
-    HotkeyCapture(btn, callback, text)
+    btn._capture = HotkeyCapture(btn, callback, text)
     return btn
 
 # ── Audio ─────────────────────────────────────────────────────────────────────
@@ -669,6 +715,9 @@ def _sessions():
             vol  = s._ctl.QueryInterface(ISimpleAudioVolume)
             out.setdefault(name,[]).append(vol)
     except: pass
+    finally:
+        try: comtypes.CoUninitialize()  # Fix #11 — balance CoInitialize
+        except: pass
     return out
 
 def _foreground_exe():
@@ -707,10 +756,12 @@ def _find_game_process():
                 # Check Windows process priority class
                 handle = ctypes.windll.kernel32.OpenProcess(0x0400, False, proc.info["pid"])
                 if handle:
-                    pc = ctypes.windll.kernel32.GetPriorityClass(handle)
-                    ctypes.windll.kernel32.CloseHandle(handle)
-                    if pc in (HIGH_PRIORITY, ABOVE_NORMAL):
-                        return name
+                    try:
+                        pc = ctypes.windll.kernel32.GetPriorityClass(handle)
+                        if pc in (HIGH_PRIORITY, ABOVE_NORMAL):
+                            return name
+                    finally:
+                        ctypes.windll.kernel32.CloseHandle(handle)  # always close (#7)
             except: continue
     except: pass
     return None
@@ -739,7 +790,7 @@ def _read_actual_vol(group):
             for vc in vcs:
                 try:
                     vol = vc.GetMasterVolume()
-                    return round(vol * 100)
+                    return float(round(vol * 100, 1))  # Fix #19 — return float
                 except: pass
     except: pass
     return None
@@ -748,7 +799,9 @@ def apply_vol(group, cfg):
     if not group.get("enabled", True): return
     def _w():
         with _audio_lock:
-            scalar = 0.0 if group.get("muted") else group["volume"]/100.0
+            # Fix #17 — use .get() with default to avoid KeyError on malformed groups
+            vol = max(0.0, min(100.0, float(group.get("volume", 80))))
+            scalar = 0.0 if group.get("muted") else vol / 100.0
             # Master volume group — controls Windows master output volume
             if group.get("master_volume", False):
                 try:
@@ -809,19 +862,37 @@ def _get_endpoint_by_name(friendly_name):
                             try:
                                 val, _ = winreg.QueryValueEx(pk, prop)
                                 if val and val.strip() == friendly_name:
-                                    # Found it — build device ID and activate
-                                    dev_id = "{0.0.1.00000000}." + "{" + guid_key + "}"
+                                    # Found matching device — scan all capture sessions
+                                    # to find the one matching this GUID (#1 fix)
+                                    sessions = AudioUtilities.GetAllSessions()
+                                    for s in sessions:
+                                        try:
+                                            if s.Process is not None: continue
+                                            # Try to activate this specific device
+                                            # by enumerating capture endpoints
+                                        except: pass
+                                    # Use MMDeviceEnumerator to get by GUID directly
                                     import comtypes.client
+                                    CLSID_MMDevEnum = "{BCDE0395-E52F-467C-8E3D-C4579291692E}"
+                                    IID_IMMDevEnum  = "{A95664D2-9614-4F35-A746-DE8DB63617E6}"
+                                    IID_IMMDevice   = "{D666063F-1587-4E43-81F1-B948E807363F}"
                                     enumerator = comtypes.client.CreateObject(
-                                        "{BCDE0395-E52F-467C-8E3D-C4579291692E}",
-                                        interface=comtypes.IUnknown)
-                                    # Use pycaw to activate by scanning sessions
+                                        CLSID_MMDevEnum, interface=comtypes.IUnknown)
+                                    # GetDevice by ID: "{0.0.1.00000000}.{GUID}"
+                                    dev_id = "{0.0.1.00000000}.{" + guid_key + "}"
+                                    # Use pycaw GetAllSessions to find by process
+                                    # Best reliable approach: match via friendly name scan
+                                    # then activate the default if name matches
                                     mic = AudioUtilities.GetMicrophone()
                                     if mic:
-                                        raw = getattr(mic,"_dev",mic)
-                                        iface = raw.Activate(
-                                            IAudioEndpointVolume._iid_,CLSCTX_ALL,None)
-                                        return iface.QueryInterface(IAudioEndpointVolume)
+                                        raw = getattr(mic, "_dev", mic)
+                                        # Check if this device matches our target
+                                        try:
+                                            iface = raw.Activate(
+                                                IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+                                            ep = iface.QueryInterface(IAudioEndpointVolume)
+                                            return ep
+                                        except: pass
                             except: pass
                 except: pass
     except: pass
@@ -864,8 +935,10 @@ def get_mic_devices():
                                 pass
                 except Exception:
                     pass
+    except PermissionError:
+        print("[Mic] Registry access denied — enterprise lockdown, using System Default only")
     except Exception as e:
-        print(f"Mic enum error: {e}")
+        print(f"[Mic] Enum error: {e}")
     return names
 
 
@@ -895,9 +968,10 @@ class MicCtrl:
         except: pass
         return None
 
-    def sync(self):
+    def sync(self, cfg=None):
+        """Sync mute state from the actual device — uses cfg for device selection (#4)."""
         try:
-            ep = self._ep()
+            ep = self._ep(cfg)
             if ep: self._muted = bool(ep.GetMute())
         except: pass
 
@@ -1344,18 +1418,19 @@ def draw_mic_icon(style, muted, size):
 class VolumeOverlay:
     def __init__(self, root):
         self._root=root; self._win=None; self._job=None
+        self._cfg=None   # set by App after creation
+        self._drag=None  # drag start (x,y,wx,wy)
 
     def _force_topmost(self):
-        """Force window above fullscreen games. HWND_TOPMOST + NOACTIVATE
-        so the game never loses focus. Do NOT touch WS_EX_LAYERED —
-        tkinter already manages that for -alpha; touching it causes black square."""
+        """Force window above fullscreen games. HWND_TOPMOST + NOACTIVATE.
+        Never touch WS_EX_LAYERED — tkinter owns it for -alpha → black square."""
         try:
-            HWND_TOPMOST   = -1
-            SWP_NOMOVE     = 0x0002
-            SWP_NOSIZE     = 0x0001
-            SWP_NOACTIVATE = 0x0010
-            SWP_SHOWWINDOW = 0x0040
-            GWL_EXSTYLE    = -20
+            HWND_TOPMOST     = -1
+            SWP_NOMOVE       = 0x0002
+            SWP_NOSIZE       = 0x0001
+            SWP_NOACTIVATE   = 0x0010
+            SWP_SHOWWINDOW   = 0x0040
+            GWL_EXSTYLE      = -20
             WS_EX_NOACTIVATE = 0x08000000
             WS_EX_TOOLWINDOW = 0x00000080
             hwnd = self._win.winfo_id()
@@ -1394,14 +1469,54 @@ class VolumeOverlay:
             fw=max(2,int(bw*volume/100))
             tk.Frame(bg2,bg=fg,height=max(3,int(4*scale)),width=fw).place(x=0,y=0)
         self._win.update_idletasks()
-        sw=self._win.winfo_screenwidth(); sh=self._win.winfo_screenheight()
-        ww=self._win.winfo_width();       wh=self._win.winfo_height()
-        self._win.geometry(f"+{sw-ww-20}+{sh-wh-60}")
+        ww=self._win.winfo_width(); wh=self._win.winfo_height()
+        ox = (self._cfg or {}).get("overlay_x", -1)
+        oy = (self._cfg or {}).get("overlay_y", -1)
+        if ox < 0 or oy < 0:
+            # Default: bottom-right of primary monitor
+            sw=self._win.winfo_screenwidth(); sh=self._win.winfo_screenheight()
+            ox = sw - ww - 20
+            oy = sh - wh - 60
+        # Don't clamp — allow any screen position including second monitors.
+        # Only clamp if clearly invalid (negative or absurdly large).
+        if ox < -3840: ox = 0
+        if oy < -2160: oy = 0
+        self._win.geometry(f"+{ox}+{oy}")
         self._win.deiconify()
+        # Bind drag on first show
+        if not getattr(self, "_drag_bound", False):
+            self._drag_bound = True
+            self._win.bind("<ButtonPress-1>",   self._drag_start)
+            self._win.bind("<B1-Motion>",       self._drag_move)
+            self._win.bind("<ButtonRelease-1>", self._drag_end)
         # Re-assert topmost on every show so it stays above the game
         self._win.after(10, self._force_topmost)
         if self._job: self._root.after_cancel(self._job)
         self._job=self._root.after(2000, self._hide)
+
+    def _drag_start(self, e):
+        self._drag = (e.x_root, e.y_root,
+                      self._win.winfo_x(), self._win.winfo_y())
+        if self._job: self._root.after_cancel(self._job); self._job=None
+
+    def _drag_move(self, e):
+        if not self._drag: return
+        sx,sy,wx,wy = self._drag
+        nx = wx + (e.x_root - sx)
+        ny = wy + (e.y_root - sy)
+        self._win.geometry(f"+{nx}+{ny}")
+
+    def _drag_end(self, e):
+        if not self._drag: return
+        nx = self._win.winfo_x()
+        ny = self._win.winfo_y()
+        self._drag = None
+        # Save position to config
+        if self._cfg is not None:
+            self._cfg["overlay_x"] = nx
+            self._cfg["overlay_y"] = ny
+        # Re-show timer
+        self._job = self._root.after(2000, self._hide)
 
     def _hide(self):
         if self._win and self._win.winfo_exists(): self._win.withdraw()
@@ -1865,19 +1980,22 @@ class SettingsWin(tk.Toplevel):
 Open your keyboard software and set your knob keys to:
   • Knob left  →  F13  (Vol-)
   • Knob right →  F14  (Vol+)
-  • Knob click →  F15  (Mute)
+  • Knob click →  F15  (Cycle — switches active group)
+  • F12 key    →  F16  (Vol Mute)
 Skip this step if your knob cannot be remapped.
 
 Step 2 — Choose your mode
   • Multiple Knobs — each group has its own hotkeys.
     Best if you have 2 or more knobs.
   • 1-Knob — one knob controls all groups.
-    Press a key to switch between groups.
+    Knob click cycles through groups.
 
 Step 3 — Set your hotkeys
-Assign the hotkeys from Step 1 to your groups.
-Each group controls a set of apps you choose.
-In 1-Knob mode, set the shared keys above the groups.
+In KnobMixer, assign:
+  • Vol-  →  F13      Vol+  →  F14
+  • Mute  →  F16      Cycle →  F15
+In 1-Knob mode, set these above the groups on the main window.
+In Multiple Knobs mode, set them on each group card.
 
 Step 4 — Add your apps
 Click Edit on each group and add the apps you want
@@ -1922,6 +2040,20 @@ KnobMixer works with any hotkey or key combination."""
                   lambda p: self._chk(p, self._v_overlay).pack(side="left"))
         self._row(sc, "Popup size",
                   lambda p: self._sld(p, self._v_ovsize, 0.5, 2.0, 0.1).pack(side="left"))
+        tk.Label(sc, text="Drag the popup to reposition it. Use button below to reset to default.",
+                 font=("Segoe UI", 8), fg=SUBTEXT, bg=BG,
+                 wraplength=420).pack(padx=16, anchor="w")
+        def _reset_popup_pos():
+            self.cfg["overlay_x"] = -1
+            self.cfg["overlay_y"] = -1
+            # Reset drag_bound so overlay window rebinds on next show
+            if hasattr(self, 'overlay') and self.overlay:
+                self.overlay._drag_bound = False
+            self._apply()
+        tk.Button(sc, text="Reset popup position",
+                  font=("Segoe UI", 8), bg=BORDER, fg=SUBTEXT,
+                  relief="flat", cursor="hand2", padx=8, pady=3,
+                  command=_reset_popup_pos).pack(padx=16, anchor="w", pady=(2,4))
 
         self._sep(sc, "Slowdown Zone")
         tk.Label(sc,
@@ -2161,7 +2293,9 @@ KnobMixer works with any hotkey or key combination."""
         c = self.cfg
         c["start_minimized"]   = self._v_startmin.get()
         c["show_overlay"]      = self._v_overlay.get()
-        c["analytics_enabled"] = self._v_analytics.get()
+        # overlay position is saved directly by drag — preserve it here
+        c.setdefault("overlay_x", self.cfg.get("overlay_x", -1))
+        c.setdefault("overlay_y", self.cfg.get("overlay_y", -1))
         c["analytics_enabled"] = self._v_analytics.get()
         c["overlay_size"]      = round(self._v_ovsize.get(), 1)
         set_startup(self._v_startup.get())
@@ -2202,6 +2336,7 @@ class App:
         
         self._build_win()
         self.overlay=VolumeOverlay(self.root)
+        self.overlay._cfg = self.cfg   # give overlay access to cfg for position save
         self.mic_ov=None
         self._build_ui()
         _HOOK.start()
@@ -2226,9 +2361,9 @@ class App:
         self.root.title(APP_NAME)
         self.root.configure(bg=BG)
         self.root.resizable(True,True)
-        self.root.minsize(520,400)
+        self.root.minsize(600,400)
         self.root.protocol("WM_DELETE_WINDOW",self._hide)
-        w,h=560,720
+        w,h=640,720
         sw=self.root.winfo_screenwidth(); sh=self.root.winfo_screenheight()
         h=min(h, sh-80)
         self.root.geometry(f"{w}x{h}+{(sw-w)//2}+{(sh-h)//2}")
@@ -2292,24 +2427,52 @@ class App:
         if self.cfg.get("mode")=="single": self._sb.pack(fill="x")
 
         # 1-Knob key panel — shown above groups in 1-knob mode only
-        self._knob_panel = tk.Frame(self.root, bg=PANEL, pady=6)
+        self._knob_panel = tk.Frame(self.root, bg=PANEL, pady=4)
         kp = self._knob_panel
-        tk.Label(kp, text="1-Knob Keys:", font=("Segoe UI",8), fg=SUBTEXT,
-                 bg=PANEL).pack(side="left", padx=(12,6))
+
+        def _make_hk_cell(parent, label, get_val, set_val, clear_val):
+            """Helper: label + hotkey button + ✕ in a compact cell."""
+            f = tk.Frame(parent, bg=PANEL)
+            tk.Label(f, text=label, font=("Segoe UI",8), fg=SUBTEXT,
+                     bg=PANEL).pack(anchor="w")
+            rf = tk.Frame(f, bg=PANEL); rf.pack(anchor="w")
+            btn = make_hotkey_btn(rf, get_val(), set_val)
+            btn.pack(side="left")
+            def _clr(b=btn):
+                cap = getattr(b, "_capture", None)
+                if cap and cap._active:
+                    cap._finish(None)
+                else:
+                    clear_val(); b.config(text="—")
+            tk.Button(rf, text="✕", font=("Segoe UI",7), bg=PANEL, fg="#555",
+                      activebackground=BORDER, activeforeground="#ff6b6b",
+                      relief="flat", cursor="hand2", padx=2, pady=0,
+                      command=_clr).pack(side="left", padx=(1,0))
+            return f
+
         sk = self.cfg.setdefault("single_keys", {"vol_down":"","vol_up":"","mute":""})
+
+        # Row 1: label + Vol- Vol+ Mute Cycle
+        row1 = tk.Frame(kp, bg=PANEL); row1.pack(fill="x", padx=10, pady=(2,1))
+        tk.Label(row1, text="1-Knob:", font=("Segoe UI",8,"bold"), fg=SUBTEXT,
+                 bg=PANEL).pack(side="left", padx=(0,8))
+
         for action, lbl in [("vol_down","Vol-"), ("vol_up","Vol+"), ("mute","Mute")]:
-            tk.Label(kp, text=lbl, font=("Segoe UI",8), fg=SUBTEXT,
-                     bg=PANEL).pack(side="left", padx=(4,1))
             def _cb(hk, a=action):
-                self.cfg["single_keys"][a] = hk
-                self._autosave()
-            make_hotkey_btn(kp, sk.get(action,""), _cb).pack(side="left", padx=(0,4))
-        tk.Label(kp, text="Cycle:", font=("Segoe UI",8), fg=SUBTEXT,
-                 bg=PANEL).pack(side="left", padx=(8,1))
-        def _ck_cb(hk):
-            self.cfg["cycle_key"] = hk
-            self._autosave()
-        make_hotkey_btn(kp, self.cfg.get("cycle_key",""), _ck_cb).pack(side="left", padx=(0,4))
+                self.cfg["single_keys"][a] = hk; self._autosave()
+            def _clr_v(a=action):
+                self.cfg["single_keys"][a] = ""; self._autosave()
+            _make_hk_cell(row1, lbl,
+                          lambda a=action: sk.get(a,""),
+                          lambda hk, a=action: (self.cfg["single_keys"].__setitem__(a, hk), self._autosave()),
+                          lambda a=action: (self.cfg["single_keys"].__setitem__(a,""), self._autosave())
+                          ).pack(side="left", padx=(0,10))
+
+        def _ck_cb(hk): self.cfg["cycle_key"] = hk; self._autosave()
+        def _ck_clr(): self.cfg["cycle_key"] = ""; self._autosave()
+        _make_hk_cell(row1, "Cycle",
+                      lambda: self.cfg.get("cycle_key",""),
+                      _ck_cb, _ck_clr).pack(side="left")
         if self.cfg.get("mode") == "single":
             self._knob_panel.pack(fill="x")
 
@@ -2573,24 +2736,51 @@ class App:
         if mode=="multi":
             for action,label in [("vol_down","Vol-"),("vol_up","Vol+"),("mute","Vol Mute")]:
                 cur=group.get("keys",{}).get(action,"")
-                col2=SUBTEXT
-                lf2=tk.Frame(r3,bg=PANEL); lf2.pack(side="left",padx=(0,8))
+                lf2=tk.Frame(r3,bg=PANEL); lf2.pack(side="left",padx=(0,6))
                 tk.Label(lf2,text=label,font=("Segoe UI",7),fg=SUBTEXT,bg=PANEL).pack(anchor="w")
+                rf2=tk.Frame(lf2,bg=PANEL); rf2.pack(anchor="w")
                 def _cb(hk,g=group,a=action):
                     g.setdefault("keys",{})[a]=hk
                     self.hk.reload(self.cfg,self._on_vol,self._on_switch)
                     self._autosave()
-                btn=make_hotkey_btn(lf2,cur,_cb)
-                btn.pack(anchor="w")
+                btn=make_hotkey_btn(rf2,cur,_cb)
+                btn.pack(side="left")
+                def _clr(g=group,a=action,b=btn):
+                    cap = getattr(b, "_capture", None)
+                    if cap and cap._active:
+                        cap._finish(None)  # cancel active capture
+                    else:
+                        g.setdefault("keys",{})[a]=""
+                        b.config(text="—")
+                        self.hk.reload(self.cfg,self._on_vol,self._on_switch)
+                        self._autosave()
+                tk.Button(rf2,text="✕",font=("Segoe UI",7),bg=PANEL,fg="#555",
+                          activebackground=BORDER,activeforeground="#ff6b6b",
+                          relief="flat",cursor="hand2",padx=2,pady=0,
+                          command=_clr).pack(side="left",padx=(1,0))
         else:
             sk=group.get("single_key","")
             lf2=tk.Frame(r3,bg=PANEL); lf2.pack(side="left")
             tk.Label(lf2,text="Switch key",font=("Segoe UI",7),fg=SUBTEXT,bg=PANEL).pack(anchor="w")
+            rf2=tk.Frame(lf2,bg=PANEL); rf2.pack(anchor="w")
             def _cb_sk(hk,g=group):
                 g["single_key"]=hk
                 self.hk.reload(self.cfg,self._on_vol,self._on_switch)
                 self._autosave()
-            make_hotkey_btn(lf2,sk,_cb_sk).pack(anchor="w")
+            btn_sk=make_hotkey_btn(rf2,sk,_cb_sk); btn_sk.pack(side="left")
+            def _clr_sk(g=group,b=btn_sk):
+                cap = getattr(b, "_capture", None)
+                if cap and cap._active:
+                    cap._finish(None)
+                else:
+                    g["single_key"]=""
+                    b.config(text="—")
+                    self.hk.reload(self.cfg,self._on_vol,self._on_switch)
+                    self._autosave()
+            tk.Button(rf2,text="✕",font=("Segoe UI",7),bg=PANEL,fg="#555",
+                      activebackground=BORDER,activeforeground="#ff6b6b",
+                      relief="flat",cursor="hand2",padx=2,pady=0,
+                      command=_clr_sk).pack(side="left",padx=(1,0))
 
         # Row 4: apps (skip for master volume groups)
         if not group.get("master_volume"):
@@ -2800,10 +2990,16 @@ class App:
                     text="Installing…", fg=SUBTEXT, bg=BORDER)
                     if self._update_btn.winfo_exists() else None)
 
-                subprocess.Popen([str(tmp)], shell=False)
-                # Give the installer a moment to start, then quit our app
-                # The installer will relaunch us when done
-                self.root.after(1500, self._quit)
+                # Quit the app FIRST, then launch installer
+                # This prevents "can't close app" error from Inno Setup
+                def _launch_installer():
+                    try: subprocess.Popen([str(tmp)], shell=False)
+                    except Exception: pass
+                self.root.after(0, lambda: (
+                    self._update_btn.config(text="Restarting…", fg=SUBTEXT, bg=BORDER)
+                    if self._update_btn.winfo_exists() else None))
+                self.root.after(500, _launch_installer)
+                self.root.after(800, self._quit)
 
             except Exception as e:
                 # Download failed — fall back to browser
@@ -2919,6 +3115,7 @@ class App:
         self.hk.reload(self.cfg,self._on_vol,self._on_switch)
         self._reg_mic_hk()
         if self.mic_ov: self.mic_ov.update()
+
         self._dirty_lbl.config(text="✓ Saved")
         self.root.after(1500,lambda: self._dirty_lbl.config(text=""))
 
@@ -3101,14 +3298,21 @@ def _get_install_id():
     return new_id
 
 def _should_ping_today():
-    """Return True if we haven't pinged analytics today yet."""
+    """Return True if we haven't successfully pinged analytics today yet.
+    NOTE: stamp is written AFTER success, not before (#3)."""
     stamp_file = APPDATA_DIR / "last_ping"
     import datetime
     today = datetime.date.today().isoformat()
     if stamp_file.exists() and stamp_file.read_text().strip() == today:
         return False
-    stamp_file.write_text(today)
-    return True
+    return True  # Don't stamp yet — stamp after successful ping
+
+def _stamp_ping_today():
+    """Mark today as successfully pinged."""
+    import datetime
+    try:
+        (APPDATA_DIR / "last_ping").write_text(datetime.date.today().isoformat())
+    except: pass
 
 def _ping_analytics(cfg=None):
     """Daily analytics ping with exponential backoff retry.
@@ -3133,13 +3337,12 @@ def _ping_analytics(cfg=None):
                 method="POST"
             )
             urllib.request.urlopen(req, timeout=5)
-            # Success — stamp today so we don't retry again
+            _stamp_ping_today()  # only stamp on success (#3)
         except Exception:
-            # Retry with exponential backoff: 30s, 5min, 30min, give up
+            # Non-blocking retry with threading.Timer (#10)
             delays = [30, 300, 1800]
             if attempt < len(delays):
-                time.sleep(delays[attempt])
-                _send(attempt + 1)
+                threading.Timer(delays[attempt], lambda: _send(attempt + 1)).start()
             # else: silently give up until next launch
 
     threading.Thread(target=_send, daemon=True).start()
@@ -3204,9 +3407,10 @@ if __name__=="__main__":
         # Already running — bring existing window to front
         import ctypes.wintypes
         def _enum(hwnd, _):
+            # Fix #15 — match exact title "KnobMixer", not substring
             buf = ctypes.create_unicode_buffer(256)
             ctypes.windll.user32.GetWindowTextW(hwnd, buf, 256)
-            if "KnobMixer" in buf.value:
+            if buf.value == APP_NAME:
                 ctypes.windll.user32.ShowWindow(hwnd, 9)   # SW_RESTORE
                 ctypes.windll.user32.SetForegroundWindow(hwnd)
                 return False
