@@ -10,7 +10,6 @@ Control the volume of individual apps independently. Turn one knob for your game
 
 ### [→ Download Latest Version](https://github.com/KnobMixer/KnobMixer/releases/latest/download/KnobMixer_Setup.exe)
 
-No Python needed. Just run the installer.
 **Requires:** Windows 10 or 11 (64-bit)
 
 ---
