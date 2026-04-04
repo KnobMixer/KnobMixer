@@ -14,18 +14,41 @@ Control the volume of individual apps independently. Turn one knob for your game
 
 ---
 
-## How to set it up
+## Setup (Takes 1-2 minutes)
 
-**Step 1 — Program your keyboard** *(skip if your knob cannot be remapped)*
+**Step 1 — Program your keyboard in your keyboard's software** *(skip if your knob cannot be remapped)*
 
-Open your keyboard software and set your knob to these recommended keys:
+<table>
+<tr>
+<td valign="top">
 
-| Action | Recommended Key |
+**Multiple Knobs Mode**
+
+| Action | Key |
+|---|---|
+| Knob left (Vol-) | F13 |
+| Knob right (Vol+) | F14 |
+| Knob click (Mute) | F15 |
+
+</td>
+<td valign="top">
+
+**1-Knob Mode**
+
+| Action | Key |
 |---|---|
 | Knob left (Vol-) | F13 |
 | Knob right (Vol+) | F14 |
 | Knob click (Cycle groups) | F15 |
 | F12 key (Mute) | F16 |
+
+</td>
+</tr>
+</table>
+
+*Can't remap your knob? Enable Hardware Knob in Settings → 1-Knob Mode.*
+
+💡 In Multiple Knobs mode, set the music knob click to Play/Pause in your keyboard software. It will pause the song instead of muting the audio.
 
 **Step 2 — Choose your mode**
 - **Multiple Knobs** — each group has its own hotkeys. Best if you have 2+ knobs
@@ -47,17 +70,11 @@ Enable **Hardware Knob** in Settings → 1-Knob Mode. KnobMixer intercepts the s
 
 ---
 
-## Features
-
-- Per-app volume groups — assign any apps to a group
-- Master Volume group — controls your entire PC volume
-- Mic toggle with floating icon (13 animated styles)
-- Volume popup overlay — shows over fullscreen games
-- Draggable popup — position it anywhere on any monitor
-- Hardware knob support for fixed-key keyboards
-- In-app automatic updates
-- Starts with Windows, lives in the system tray
-- Lightweight — ~0% CPU at idle
+## Why KnobMixer?
+- Control multiple apps at once
+- Works in fullscreen games
+- Instant response, lightweight (~0% CPU idle)
+- No ads, no tracking, no login
 
 ---
 
