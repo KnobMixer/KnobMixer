@@ -1,44 +1,73 @@
-KnobMixer
-Free per-app volume control for keyboard knobs & hotkeys — Windows
+# KnobMixer
+
+**Free per-app volume control for keyboard knobs & hotkeys — Windows**
+
 Control the volume of individual apps independently. Turn one knob for your game, another for Discord, another for your browser — all at the same time.
+
 ---
-⬇️ Download
-→ Click here to download KnobMixer v2.7.1
+
+## ⬇️ Download
+
+### [→ Download Latest Version](https://github.com/KnobMixer/KnobMixer/releases/latest/download/KnobMixer_Setup.exe)
+
 No Python needed. Just run the installer.
-Requires: Windows 10 or 11 (64-bit)
+**Requires:** Windows 10 or 11 (64-bit)
+
 ---
-How to set it up
-Step 1 — Program your keyboard (skip if your knob can't be remapped)
+
+## How to set it up
+
+**Step 1 — Program your keyboard** *(skip if your knob cannot be remapped)*
+
 Open your keyboard software and set your knob to these recommended keys:
-Action	Recommended Key
-Knob left (Vol-)	F13
-Knob right (Vol+)	F14
-Knob click (Cycle groups)	F15
-F12 key (Mute)	F16
-Step 2 — Choose your mode
-Multiple Knobs — each group has its own hotkeys. Best if you have 2+ knobs
-1-Knob mode — one knob controls all groups, press Cycle key to switch between them
-Step 3 — Set your hotkeys
+
+| Action | Recommended Key |
+|---|---|
+| Knob left (Vol-) | F13 |
+| Knob right (Vol+) | F14 |
+| Knob click (Cycle groups) | F15 |
+| F12 key (Mute) | F16 |
+
+**Step 2 — Choose your mode**
+- **Multiple Knobs** — each group has its own hotkeys. Best if you have 2+ knobs
+- **1-Knob mode** — one knob controls all groups, press Cycle key to switch between them
+
+**Step 3 — Set your hotkeys**
+
 In KnobMixer, assign the keys from Step 1 to your groups. In 1-Knob mode, the shared keys appear above the groups on the main window.
-Step 4 — Add your apps
-Click Edit on each group and add the apps you want it to control (e.g. `spotify`, `discord`, `cs2`). When an app is open it appears in the list for easy adding.
+
+**Step 4 — Add your apps**
+
+Click **Edit** on each group and add the apps you want it to control (e.g. `spotify`, `discord`, `cs2`). When an app is open it appears in the list for easy adding.
+
 ---
-Hardware knob that can't be remapped? (e.g. AULAF75)
-Enable Hardware Knob in Settings → 1-Knob Mode. KnobMixer intercepts the system volume keys and redirects them to your active group — system volume stays untouched.
+
+## Hardware knob that cannot be remapped? (e.g. AULAF75)
+
+Enable **Hardware Knob** in Settings → 1-Knob Mode. KnobMixer intercepts the system volume keys and redirects them to your active group — system volume stays untouched.
+
 ---
-Features
-Per-app volume groups — assign any apps to a group
-Master Volume group — controls your entire PC volume
-Mic toggle with floating icon (13 animated styles)
-Volume popup overlay — shows over fullscreen games
-Draggable popup — position it anywhere on any monitor
-Hardware knob support for fixed-key keyboards
-In-app automatic updates
-Starts with Windows, lives in the system tray
-Lightweight — ~0% CPU at idle
+
+## Features
+
+- Per-app volume groups — assign any apps to a group
+- Master Volume group — controls your entire PC volume
+- Mic toggle with floating icon (13 animated styles)
+- Volume popup overlay — shows over fullscreen games
+- Draggable popup — position it anywhere on any monitor
+- Hardware knob support for fixed-key keyboards
+- In-app automatic updates
+- Starts with Windows, lives in the system tray
+- Lightweight — ~0% CPU at idle
+
 ---
-No knob? No problem.
+
+## No knob? No problem.
+
 KnobMixer works with any hotkey combination — keyboard shortcuts, stream deck keys, or mouse buttons.
+
 ---
-Free. No ads. No login. Open source.
-Report a bug · Releases
+
+**Free. No ads. No login. Open source.**
+
+[Report a bug](https://github.com/KnobMixer/KnobMixer/issues) · [Releases](https://github.com/KnobMixer/KnobMixer/releases)
