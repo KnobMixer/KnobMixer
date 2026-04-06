@@ -1,5 +1,5 @@
 """
-KnobMixer v2.7.1
+KnobMixer v2.7.2
 Free per-app volume control for keyboard knobs and hotkeys.
 https://github.com/KnobMixer/KnobMixer
 """
@@ -11,7 +11,25 @@ def _can_import(mod):
     try: __import__(mod); return True
     except ImportError: return False
 
-def _ensure_deps():
+def _ensure_deps(): pass
+_ensure_deps()
+
+def _cleanup_temp_wavs():
+    """Remove any leftover KnobMixer temp WAV files from crashed sessions."""
+    import tempfile, glob, time
+    try:
+        tmp_dir = tempfile.gettempdir()
+        for f in glob.glob(os.path.join(tmp_dir, "*.wav")):
+            try:
+                # Only remove files older than 60 seconds (not currently playing)
+                if time.time() - os.path.getmtime(f) > 60:
+                    os.unlink(f)
+            except: pass
+    except: pass
+
+_ensure_deps()
+
+def _cleanup_temp_wavs():
     import subprocess
     needed = {"pycaw":"pycaw","comtypes":"comtypes","keyboard":"keyboard",
               "pystray":"pystray","PIL":"Pillow","psutil":"psutil"}
@@ -24,6 +42,21 @@ def _ensure_deps():
             subprocess.check_call([sys.executable,"-m","pip","install",pkg,"-q"],
                                   creationflags=subprocess.CREATE_NO_WINDOW)
 _ensure_deps()
+
+def _cleanup_temp_wavs():
+    """Remove any leftover KnobMixer temp WAV files from crashed sessions."""
+    import tempfile, glob, time
+    try:
+        tmp_dir = tempfile.gettempdir()
+        for f in glob.glob(os.path.join(tmp_dir, "*.wav")):
+            try:
+                # Only remove files older than 60 seconds (not currently playing)
+                if time.time() - os.path.getmtime(f) > 60:
+                    os.unlink(f)
+            except: pass
+    except: pass
+
+_cleanup_temp_wavs()
 
 # ── Crash logging ─────────────────────────────────────────────────────────────
 import traceback as _tb
@@ -303,7 +336,7 @@ _HOOK = GlobalHookManager()
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 APP_NAME    = "KnobMixer"
-APP_VER     = "2.7.1"
+APP_VER     = "2.7.2"
 APPDATA_DIR = Path(os.getenv("APPDATA",".")) / APP_NAME
 APPDATA_DIR.mkdir(parents=True, exist_ok=True)
 CONFIG_FILE = APPDATA_DIR / "config.json"
@@ -429,17 +462,21 @@ def load_cfg():
             print(f"[Config] Load failed ({e}), using defaults")
     return copy.deepcopy(DEFAULT_CFG)
 
+_save_lock = threading.Lock()  # prevents concurrent config writes
+
 def save_cfg(cfg):
-    cfg.pop("_active_group_ref", None)
-    # Atomic write — write to temp file then replace, prevents corruption on crash
-    tmp = CONFIG_FILE.with_suffix(".tmp")
-    try:
-        tmp.write_text(json.dumps(cfg, indent=2))
-        os.replace(tmp, CONFIG_FILE)
-    except Exception as e:
-        print(f"[Config] Save failed: {e}")
-        try: tmp.unlink()
-        except: pass
+    # Save a shallow copy so we don't mutate the live cfg dict
+    # _active_group_ref must NOT be popped from live cfg — it's used by hotkey callbacks
+    data = {k: v for k, v in cfg.items() if k != "_active_group_ref"}
+    with _save_lock:
+        tmp = CONFIG_FILE.with_suffix(f".tmp")
+        try:
+            tmp.write_text(json.dumps(data, indent=2))
+            os.replace(tmp, CONFIG_FILE)
+        except Exception as e:
+            print(f"[Config] Save failed: {e}")
+            try: tmp.unlink()
+            except: pass
 
 # ── Startup ───────────────────────────────────────────────────────────────────
 def set_startup(en):
@@ -461,6 +498,7 @@ def get_startup():
 # ── Sound engine ──────────────────────────────────────────────────────────────
 _sound_lock   = threading.Lock()
 _sound_thread = None
+_sound_cancel = threading.Event()  # set to cancel any in-progress sound immediately
 
 def _make_wav(freq, dur_ms, vol=0.15, shape="sine"):
     sr = 22050
@@ -565,14 +603,19 @@ def _make_wav(freq, dur_ms, vol=0.15, shape="sine"):
     return out.getvalue()
 
 def play_sound(freq, dur_ms=60, vol=0.6, shape="sine"):
-    """Play sound immediately, cancelling any queued sound."""
+    """Play sound, cancelling any currently playing sound first.
+    If called rapidly (e.g. holding hotkey), only the latest plays."""
     global _sound_thread
     import winsound, tempfile
-    # Guard against zero-length WAV (dur_ms=0 produces empty buffer)
     if dur_ms <= 0: return
+    # Cancel any in-progress sound immediately
+    _sound_cancel.set()
+    # Wait briefly for previous thread to stop (max 30ms)
+    if _sound_thread and _sound_thread.is_alive():
+        _sound_thread.join(timeout=0.03)
+    _sound_cancel.clear()
     data = _make_wav(freq, dur_ms, vol, shape)
     if not data: return
-    # Use NamedTemporaryFile instead of mktemp — avoids TOCTOU race (#9)
     try:
         tf = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
         tmp = Path(tf.name)
@@ -580,8 +623,15 @@ def play_sound(freq, dur_ms=60, vol=0.6, shape="sine"):
         tf.close()
     except Exception: return
     def _play():
+        # Check cancel before starting — if another call came in, skip
+        if _sound_cancel.is_set():
+            try: tmp.unlink()
+            except: pass
+            return
         with _sound_lock:
-            try: winsound.PlaySound(str(tmp), winsound.SND_FILENAME)
+            try:
+                if not _sound_cancel.is_set():
+                    winsound.PlaySound(str(tmp), winsound.SND_FILENAME)
             finally:
                 try: tmp.unlink()
                 except: pass
@@ -704,6 +754,7 @@ def make_hotkey_btn(parent, current_key, callback, label_prefix=""):
 
 # ── Audio ─────────────────────────────────────────────────────────────────────
 _audio_lock = threading.Lock()
+_cfg_lock   = threading.Lock()  # protects group dict mutations from hook thread
 
 def _sessions():
     comtypes.CoInitialize()
@@ -766,6 +817,38 @@ def _find_game_process():
     except: pass
     return None
 
+# ── Audio worker queue — prevents thread pile-up on rapid hotkey spam ────────
+import queue as _queue
+_audio_q     = _queue.Queue(maxsize=4)   # max 4 pending ops; extras dropped
+_audio_worker_running = False
+
+def _audio_queue_push(fn):
+    """Push audio op to worker. If queue full, drop oldest (stale) entry."""
+    try:
+        _audio_q.put_nowait(fn)
+    except _queue.Full:
+        try: _audio_q.get_nowait()   # drop oldest stale op
+        except: pass
+        try: _audio_q.put_nowait(fn)
+        except: pass
+
+def _audio_worker():
+    """Single background thread that drains the audio queue."""
+    global _audio_worker_running
+    _audio_worker_running = True
+    while True:
+        try:
+            fn = _audio_q.get(timeout=5)
+            fn()
+        except _queue.Empty:
+            continue
+        except Exception as e:
+            print(f"[Audio worker] {e}")
+
+# Start the audio worker thread once
+_aw = threading.Thread(target=_audio_worker, daemon=True, name="AudioWorker")
+_aw.start()
+
 def _calc_vol(current, delta, cfg):
     thr  = cfg.get("slowdown_threshold", 10)
     fine = cfg.get("slowdown_step", 0.5)
@@ -778,13 +861,11 @@ def _calc_vol(current, delta, cfg):
 
 def _read_actual_vol(group):
     """Read the actual current volume of a group's apps from Windows.
-    Returns 0-100 float, or None if no matching app is running.
-    Used to sync the group volume before first knob turn after switching games."""
+    Returns 0-100 float, or None if no matching app is running."""
     try:
-        comtypes.CoInitialize()
         apps = group.get("apps", [])
         if not apps: return None
-        sess = _sessions()
+        sess = _sessions()  # _sessions() handles CoInitialize internally
         for app in apps:
             vcs = sess.get(app.lower(), [])
             for vc in vcs:
@@ -799,41 +880,39 @@ def apply_vol(group, cfg):
     if not group.get("enabled", True): return
     def _w():
         with _audio_lock:
-            # Fix #17 — use .get() with default to avoid KeyError on malformed groups
-            vol = max(0.0, min(100.0, float(group.get("volume", 80))))
-            scalar = 0.0 if group.get("muted") else vol / 100.0
-            # Master volume group — controls Windows master output volume
-            if group.get("master_volume", False):
-                try:
-                    comtypes.CoInitialize()
-                    # pycaw GetSpeakers() returns an AudioDevice wrapper.
-                    # Access the raw COM IMMDevice via ._dev, then Activate
-                    # to get IAudioEndpointVolume — the correct pycaw pattern.
-                    dev = AudioUtilities.GetSpeakers()
-                    # Try ._dev (raw COM ptr) first, fall back to direct call
-                    raw = getattr(dev, "_dev", dev)
-                    iface = raw.Activate(
-                        IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
-                    ep = iface.QueryInterface(IAudioEndpointVolume)
-                    if group.get("muted"):
-                        ep.SetMute(1, None)
-                    else:
-                        ep.SetMute(0, None)
-                        ep.SetMasterVolumeLevelScalar(float(scalar), None)
-                    # Sync slider to actual Windows volume
-                    group["volume"] = round(
-                        ep.GetMasterVolumeLevelScalar() * 100)
-                except Exception as e:
-                    print(f"[Master vol error] {e}")
-                return
-            apps = list(group.get("apps",[]))
-            # No foreground mode — apps must be added manually
-            sess = _sessions()
-            for app in apps:
-                for vc in sess.get(app.lower(),[]):
-                    try: vc.SetMasterVolume(scalar,None)
-                    except: pass
-    threading.Thread(target=_w, daemon=True).start()
+            try:
+                comtypes.CoInitialize()
+                # Fix #17 — use .get() with default to avoid KeyError on malformed groups
+                vol = max(0.0, min(100.0, float(group.get("volume", 80))))
+                scalar = 0.0 if group.get("muted") else vol / 100.0
+                # Master volume group — controls Windows master output volume
+                if group.get("master_volume", False):
+                    try:
+                        dev = AudioUtilities.GetSpeakers()
+                        raw = getattr(dev, "_dev", dev)
+                        iface = raw.Activate(
+                            IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+                        ep = iface.QueryInterface(IAudioEndpointVolume)
+                        if group.get("muted"):
+                            ep.SetMute(1, None)
+                        else:
+                            ep.SetMute(0, None)
+                            ep.SetMasterVolumeLevelScalar(max(0.001, float(scalar)) if float(scalar) > 0 else 0.0, None)
+                        group["volume"] = round(
+                            ep.GetMasterVolumeLevelScalar() * 100)
+                    except Exception as e:
+                        print(f"[Master vol] {e}")
+                    return
+                apps = list(group.get("apps",[]))
+                if not apps: return
+                sess = _sessions()
+                for app in apps:
+                    for vc in sess.get(app.lower(),[]):
+                        try: vc.SetMasterVolume(scalar, None)
+                        except: pass
+            except Exception as e:
+                print(f"[apply_vol] {e}")  # device change, COM error etc — silent recovery
+    _audio_queue_push(_w)
 
 def running_audio_apps():
     try: return sorted(_sessions().keys())
@@ -983,9 +1062,13 @@ class MicCtrl:
             def _w():
                 try:
                     ep = self._ep(cfg)
-                    if ep: ep.SetMute(1 if muted else 0, None)
-                except: pass
-            threading.Thread(target=_w, daemon=True).start()
+                    if ep:
+                        ep.SetMute(1 if muted else 0, None)
+                    else:
+                        print("[Mic] Device unavailable — state tracked, not applied")
+                except Exception as e:
+                    print(f"[Mic set] {e}")
+            _audio_queue_push(_w)
             vol = cfg.get("mic_sound_volume", 0.6)
             preset = cfg.get("mic_sound_preset", 0)
             play_preset(preset, vol, muted)
@@ -1461,7 +1544,7 @@ class VolumeOverlay:
         nsz  = max(8, int(9*scale))
         bw   = max(60, int(140*scale))
         f=tk.Frame(self._win,bg="#12121e",padx=pad,pady=max(8,int(10*scale))); f.pack()
-        tk.Label(f,text=name,font=("Segoe UI",nsz),fg="#888",bg="#12121e").pack()
+        tk.Label(f,text=name,font=("Segoe UI",nsz,"bold"),fg=color,bg="#12121e").pack()
         tk.Label(f,text=text,font=("Segoe UI",fsz,"bold"),fg=fg,bg="#12121e").pack()
         if not muted:
             bg2=tk.Frame(f,bg="#2a2a3e",height=max(3,int(4*scale)),width=bw)
@@ -1562,6 +1645,7 @@ class MicOverlay:
         self._canvas.bind("<ButtonRelease-1>", self._de)
         self._win.after(50, self._apply_clickthrough)
         self._win.after(60, self._force_topmost_mic)
+        self._win.after(2000, self._keep_topmost_mic)  # periodic re-assert
 
     def _force_topmost_mic(self):
         """Force mic overlay above fullscreen games without stealing focus."""
@@ -1584,6 +1668,13 @@ class MicOverlay:
                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW)
         except Exception:
             pass
+
+    def _keep_topmost_mic(self):
+        """Re-assert topmost every 2 seconds so mic icon stays visible
+        even after fullscreen apps, media players, etc steal the top."""
+        if self._win and self._win.winfo_exists():
+            self._force_topmost_mic()
+            self._win.after(2000, self._keep_topmost_mic)
 
     def _render(self):
         sz    = max(20, self._cfg.get("mic_icon_size",40))
@@ -1645,6 +1736,7 @@ class MicOverlay:
         else: self._build()
     def hide(self):
         if self._win and self._win.winfo_exists(): self._win.withdraw()
+        # _keep_topmost_mic checks winfo_exists() so will stop naturally
 
 # ── Hotkey engine ─────────────────────────────────────────────────────────────
 class HotkeyEngine:
@@ -1655,7 +1747,18 @@ class HotkeyEngine:
         pass  # _HOOK is global, shared
 
     def reload(self, cfg, on_vol, on_switch=None):
-        _HOOK.clear()   # wipe previous bindings
+        # Save old callbacks, build new ones, then atomically swap
+        # Prevents gap where no hotkeys are registered during reload
+        _prev = _HOOK._callbacks[:]
+        _HOOK._callbacks = []
+        try:
+            self._register_all(cfg, on_vol, on_switch)
+        except Exception as e:
+            _HOOK._callbacks = _prev  # restore on failure
+            print(f"[HotkeyEngine] reload failed, restored previous: {e}")
+            return
+
+    def _register_all(self, cfg, on_vol, on_switch=None):
         mode = cfg.get("mode","multi")
 
         if mode == "multi":
@@ -1665,13 +1768,12 @@ class HotkeyEngine:
                 def mk_vol(grp, delta):
                     def _():
                         if not grp.get("enabled",True): return
-                        # Sync from Windows before calculating — handles switching
-                        # between games (e.g. Tarkov at 20% → Overwatch at 100%)
-                        actual = _read_actual_vol(grp)
-                        if actual is not None and abs(actual - grp["volume"]) > 3:
-                            grp["volume"] = actual  # snap to real Windows volume
-                        grp["volume"] = _calc_vol(grp["volume"], delta, cfg)
-                        grp["muted"]  = False
+                        with _cfg_lock:
+                            actual = _read_actual_vol(grp)
+                            if actual is not None and abs(actual - grp["volume"]) > 3:
+                                grp["volume"] = actual
+                            grp["volume"] = _calc_vol(grp["volume"], delta, cfg)
+                            grp["muted"]  = False
                         apply_vol(grp, cfg); on_vol(grp)
                     return _
 
@@ -1975,48 +2077,102 @@ class SettingsWin(tk.Toplevel):
 
     # ── General tab ──────────────────────────────────────────────────────────
     def _build_howto(self, nb):
-        sc = self._make_tab(nb, "How To Use")
-        howto = """Step 1 — Program your keyboard
-Open your keyboard software and set your knob keys to:
-  • Knob left  →  F13  (Vol-)
-  • Knob right →  F14  (Vol+)
-  • Knob click →  F15  (Cycle — switches active group)
-  • F12 key    →  F16  (Vol Mute)
-Skip this step if your knob cannot be remapped.
+        # Don't use _make_tab's scrollable canvas — give Text its own scrollbar
+        # so scrolling is native and the scrollbar is always visible
+        outer = tk.Frame(nb, bg=BG)
+        nb.add(outer, text="How To Use")
 
-Step 2 — Choose your mode
-  • Multiple Knobs — each group has its own hotkeys.
-    Best if you have 2 or more knobs.
-  • 1-Knob — one knob controls all groups.
-    Knob click cycles through groups.
+        sb = tk.Scrollbar(outer, orient="vertical")
+        sb.pack(side="right", fill="y")
 
-Step 3 — Set your hotkeys
-In KnobMixer, assign:
-  • Vol-  →  F13      Vol+  →  F14
-  • Mute  →  F16      Cycle →  F15
-In 1-Knob mode, set these above the groups on the main window.
-In Multiple Knobs mode, set them on each group card.
-
-Step 4 — Add your apps
-Click Edit on each group and add the apps you want
-it to control (e.g. spotify, discord, your game name).
-When an app is open it appears in the list for easy adding.
-
-Hardware knob that can't be remapped? (e.g. AULAF75)
-Enable Hardware Knob in Settings → 1-Knob Mode.
-KnobMixer intercepts the system volume keys and
-redirects them to your active group instead.
-
-No knob? No problem.
-KnobMixer works with any hotkey or key combination."""
-
-        txt = tk.Text(sc, font=("Segoe UI", 9), fg=TEXT, bg=BG,
+        txt = tk.Text(outer, font=("Segoe UI", 9), fg=TEXT, bg=BG,
                       relief="flat", padx=16, pady=12,
                       wrap="word", cursor="arrow",
-                      state="normal", height=28)
-        txt.insert("1.0", howto)
+                      yscrollcommand=sb.set,
+                      state="normal")
+        txt.pack(side="left", fill="both", expand=True)
+        sb.config(command=txt.yview)
+        txt.bind("<MouseWheel>", lambda e: txt.yview_scroll(int(-1*(e.delta/120)), "units"))
+
+        def _h(t, bold=False, color=None, size=9):
+            tag = f"tag_{id(t)}"
+            txt.tag_configure(tag,
+                font=("Segoe UI", size, "bold" if bold else "normal"),
+                foreground=color or TEXT)
+            txt.insert("end", t, tag)
+
+        def _line(t="", bold=False, color=None, size=9, indent=0):
+            if indent:
+                txt.insert("end", "  " * indent)
+            _h(t, bold=bold, color=color, size=size)
+            txt.insert("end", "\n")
+
+        def _sep():
+            txt.insert("end", "\n")
+
+        # ── Header ──────────────────────────────────────────────────────────
+        _line("Setup (Takes 1-2 minutes)", bold=True, size=11)
+        _sep()
+
+        # ── Step 1 ──────────────────────────────────────────────────────────
+        _line("Step 1 — Program your keyboard software", bold=True, color="#1DB954")
+        _line("Skip this step if your knob cannot be remapped.", color=SUBTEXT)
+        _sep()
+
+        _line("Multiple Knobs Mode:", bold=True)
+        _line("Knob left   →  F13  (Vol-)", indent=1)
+        _line("Knob right  →  F14  (Vol+)", indent=1)
+        _line("Knob click  →  F15  (Mute)", indent=1)
+        _sep()
+
+        _line("1-Knob Mode:", bold=True)
+        _line("Knob left   →  F13  (Vol-)", indent=1)
+        _line("Knob right  →  F14  (Vol+)", indent=1)
+        _line("Knob click  →  F15  (Cycle groups)", indent=1)
+        _line("F12 key     →  F16  (Mute)", indent=1)
+        _sep()
+
+        _line("Can't remap? Enable Hardware Knob in Settings → 1-Knob Mode.", color=SUBTEXT)
+        _sep()
+
+        # ── Step 2 ──────────────────────────────────────────────────────────
+        _line("Step 2 — Choose your mode in KnobMixer", bold=True, color="#1DB954")
+        _line("Multiple Knobs  —  each group has its own hotkeys.", indent=1)
+        _line("1-Knob  —  one knob controls all groups.", indent=1)
+        _line("Press Cycle key to switch between groups.", indent=2, color=SUBTEXT)
+        _line("Keys are set above the groups on the main window.", indent=2, color=SUBTEXT)
+        _sep()
+
+        # ── Step 3 ──────────────────────────────────────────────────────────
+        _line("Step 3 — Set your hotkeys", bold=True, color="#1DB954")
+        _line("Assign the keys from Step 1 to your groups in KnobMixer.", indent=1)
+        _sep()
+
+        # ── Step 4 ──────────────────────────────────────────────────────────
+        _line("Step 4 — Add your apps", bold=True, color="#1DB954")
+        _line("Click Edit on each group and add app names.", indent=1)
+        _line("Open apps appear in the list for easy adding.", indent=1)
+        _sep()
+
+        # ── Divider ─────────────────────────────────────────────────────────
+        _line("─" * 40, color=BORDER)
+        _sep()
+
+        # ── Tips ────────────────────────────────────────────────────────────
+        _line("Tips", bold=True, size=10)
+        _sep()
+        _line("💡 Music knob click", bold=True)
+        _line("In Multiple Knobs mode, set music knob click to Play/Pause", indent=1)
+        _line("in keyboard software — pauses song instead of muting.", indent=1)
+        _sep()
+        _line("💡 Hardware knob (e.g. AULAF75)", bold=True)
+        _line("Enable Hardware Knob in Settings → 1-Knob Mode.", indent=1)
+        _line("Intercepts system volume keys — system volume stays untouched.", indent=1)
+        _sep()
+        _line("💡 No knob?", bold=True)
+        _line("Use any keyboard shortcut, stream deck key, or mouse button.", indent=1)
+
         txt.config(state="disabled")
-        txt.pack(fill="both", expand=True, padx=0, pady=0)
 
     def _build_general(self, nb):
         sc = self._make_tab(nb, "General")
@@ -2090,12 +2246,65 @@ KnobMixer works with any hotkey or key combination."""
                       relief="flat", cursor="hand2", padx=8, pady=3,
                       command=lambda: webbrowser.open(
                           f"https://github.com/{GITHUB_REPO}")).pack(side="left", padx=(0,6))
+        def _mode_label():
+            return "1-Knob" if self.cfg.get("mode") == "single" else "Multiple Knobs"
+
+        def _open_bug_report():
+            import platform, urllib.parse
+            # Read crash log if it exists
+            crash_log = APPDATA_DIR / "crash.log"
+            crash_text = ""
+            try:
+                if crash_log.exists():
+                    # Last 3000 chars of crash log — most recent entries
+                    raw = crash_log.read_text(encoding="utf-8", errors="replace")
+                    crash_text = raw[-3000:] if len(raw) > 3000 else raw
+            except: pass
+
+            debug = (
+                f"**KnobMixer version:** v{APP_VER}\n"
+                f"**Windows:** {platform.version()}\n"
+                f"**Mode:** {_mode_label()}\n"
+                f"**Groups:** {len(self.cfg.get('groups',[]))}\n"
+                f"**Mic enabled:** {self.cfg.get('mic_enabled',False)}\n"
+                f"**HW knob:** {self.cfg.get('hw_knob_enabled',False)}\n\n"
+                f"**Describe the bug:**\n\n"
+                f"**Steps to reproduce:**\n1. \n2. \n3. \n\n"
+                f"**Expected behavior:**\n\n"
+                f"**What actually happened:**\n\n"
+            )
+            if crash_text:
+                debug += f"**Crash log (last entries):**\n```\n{crash_text}\n```\n"
+            else:
+                debug += "**Crash log:** No crashes recorded.\n"
+
+            params = urllib.parse.urlencode({
+                "title": "[Bug] ",
+                "body": debug,
+                "labels": "bug"
+            })
+            url = f"https://github.com/{GITHUB_REPO}/issues/new?{params}"
+            webbrowser.open(url)
+
+        def _open_log_folder():
+            """Open the KnobMixer data folder so user can attach crash.log."""
+            import subprocess
+            try:
+                subprocess.Popen(["explorer", str(APPDATA_DIR)])
+            except Exception as e:
+                import tkinter.messagebox as _mb
+                _mb.showinfo("Log folder",
+                    f"Logs are at:\n{APPDATA_DIR}\n\nAttach crash.log to your bug report.",
+                    parent=self)
+
         tk.Button(f_links, text="Report a bug",
                   font=("Segoe UI", 8), bg=BORDER, fg=TEXT,
                   relief="flat", cursor="hand2", padx=8, pady=3,
-                  command=lambda: webbrowser.open(
-                      f"https://github.com/{GITHUB_REPO}/issues" if GITHUB_REPO
-                      else "mailto:your@email.com")).pack(side="left")
+                  command=_open_bug_report).pack(side="left")
+        tk.Button(f_links, text="Open log folder",
+                  font=("Segoe UI", 8), bg=BORDER, fg=SUBTEXT,
+                  relief="flat", cursor="hand2", padx=8, pady=3,
+                  command=_open_log_folder).pack(side="left", padx=(4,0))
 
         self._sep(sc, "Reset All Keybinds")
         tk.Label(sc, text="Clears all hotkeys in every group, mic toggle, and shared keys.",
@@ -2130,10 +2339,20 @@ KnobMixer works with any hotkey or key combination."""
 
         tk.Label(sc,
                  text="In 1-Knob mode, one set of keys controls all groups.\n"
-                      "Press a group switch key to focus that group. By default\n"
-                      "it stays on that group until you switch again.",
+                      "Press the Cycle key to switch between groups.",
                  font=("Segoe UI", 9), fg=SUBTEXT, bg=BG,
                  justify="left").pack(padx=16, pady=(12, 4), anchor="w")
+        tk.Label(sc,
+                 text="Volume control hotkeys (Vol-, Vol+, Mute, Cycle) are set "
+                      "in the main window above the groups.",
+                 font=("Segoe UI", 8), fg="#1DB954", bg=BG,
+                 wraplength=420, justify="left").pack(padx=16, pady=(0,4), anchor="w")
+        tk.Label(sc,
+                 text="Recommended keyboard mapping:\n"
+                      "  Knob left → F13 (Vol-)   Knob right → F14 (Vol+)\n"
+                      "  Knob click → F15 (Cycle)   F12 key → F16 (Mute)",
+                 font=("Consolas", 8), fg=SUBTEXT, bg=BG,
+                 justify="left").pack(padx=16, pady=(0,8), anchor="w")
 
         self._sep(sc, "Auto-Revert to Default Group")
         self._row(sc, "Enable auto-revert",
@@ -2363,6 +2582,7 @@ class App:
         self.root.resizable(True,True)
         self.root.minsize(600,400)
         self.root.protocol("WM_DELETE_WINDOW",self._hide)
+        self.root.bind("<FocusOut>", lambda e: self._card_drag_cancel() if hasattr(self,"_card_drag_cancel") else None)
         w,h=640,720
         sw=self.root.winfo_screenwidth(); sh=self.root.winfo_screenheight()
         h=min(h, sh-80)
@@ -2382,7 +2602,7 @@ class App:
         hdr=tk.Frame(self.root,bg="#111118",pady=10); hdr.pack(fill="x")
         lf=tk.Frame(hdr,bg="#111118"); lf.pack(side="left",padx=14)
         tk.Label(lf,text="KnobMixer",font=("Segoe UI",15,"bold"),fg=TEXT,bg="#111118").pack(anchor="w")
-        tk.Label(lf,text=f"v{APP_VER}  —  Per-app volume control for knobs & hotkeys",
+        tk.Label(lf,text=f"v{APP_VER}  —  Volume control for apps using knobs & hotkeys",
                  font=("Segoe UI",8),fg=SUBTEXT,bg="#111118").pack(anchor="w")
 
         rf=tk.Frame(hdr,bg="#111118"); rf.pack(side="right",padx=14)
@@ -2473,11 +2693,14 @@ class App:
         _make_hk_cell(row1, "Cycle",
                       lambda: self.cfg.get("cycle_key",""),
                       _ck_cb, _ck_clr).pack(side="left")
-        if self.cfg.get("mode") == "single":
-            self._knob_panel.pack(fill="x")
+        # Knob panel packs after groups frame is created (see below)
+        self._knob_panel_pending = self.cfg.get("mode") == "single"
 
         # Groups — scrollable canvas with minimal auto-hide scrollbar
         cf=tk.Frame(self.root,bg=BG); cf.pack(fill="both",expand=True)
+        self._groups_cf = cf  # reference for knob panel ordering
+        if getattr(self, "_knob_panel_pending", False):
+            self._knob_panel.pack(fill="x", before=cf)
         self._canvas=tk.Canvas(cf,bg=BG,highlightthickness=0,bd=0)
         # Minimal custom scrollbar: thin dark strip
         self._sb_frame=tk.Frame(cf,bg=BG,width=10)
@@ -2629,9 +2852,15 @@ class App:
         if not self._drag_state.get("active"): return
         self._drag_state["active"] = False
         self._autosave()
-        # Remove root-level bindings — back to normal
         self.root.unbind("<B1-Motion>")
         self.root.unbind("<ButtonRelease-1>")
+
+    def _card_drag_cancel(self, event=None):
+        """Cancel drag if window loses focus mid-drag."""
+        if self._drag_state.get("active"):
+            self._drag_state["active"] = False
+            self.root.unbind("<B1-Motion>")
+            self.root.unbind("<ButtonRelease-1>")
 
     # Keep old signatures for the handle bindings (they just start the drag)
     def _card_drag_motion(self, event, idx): pass
@@ -2758,29 +2987,7 @@ class App:
                           activebackground=BORDER,activeforeground="#ff6b6b",
                           relief="flat",cursor="hand2",padx=2,pady=0,
                           command=_clr).pack(side="left",padx=(1,0))
-        else:
-            sk=group.get("single_key","")
-            lf2=tk.Frame(r3,bg=PANEL); lf2.pack(side="left")
-            tk.Label(lf2,text="Switch key",font=("Segoe UI",7),fg=SUBTEXT,bg=PANEL).pack(anchor="w")
-            rf2=tk.Frame(lf2,bg=PANEL); rf2.pack(anchor="w")
-            def _cb_sk(hk,g=group):
-                g["single_key"]=hk
-                self.hk.reload(self.cfg,self._on_vol,self._on_switch)
-                self._autosave()
-            btn_sk=make_hotkey_btn(rf2,sk,_cb_sk); btn_sk.pack(side="left")
-            def _clr_sk(g=group,b=btn_sk):
-                cap = getattr(b, "_capture", None)
-                if cap and cap._active:
-                    cap._finish(None)
-                else:
-                    g["single_key"]=""
-                    b.config(text="—")
-                    self.hk.reload(self.cfg,self._on_vol,self._on_switch)
-                    self._autosave()
-            tk.Button(rf2,text="✕",font=("Segoe UI",7),bg=PANEL,fg="#555",
-                      activebackground=BORDER,activeforeground="#ff6b6b",
-                      relief="flat",cursor="hand2",padx=2,pady=0,
-                      command=_clr_sk).pack(side="left",padx=(1,0))
+        # 1-Knob mode: switch key removed — use Cycle key in the panel above groups
 
         # Row 4: apps (skip for master volume groups)
         if not group.get("master_volume"):
@@ -2791,7 +2998,8 @@ class App:
             tk.Button(r4,text="Edit",font=("Segoe UI",8),bg=BORDER,fg=TEXT,
                       relief="flat",cursor="hand2",padx=6,pady=1,
                       command=lambda g=group,l=apps_lbl:
-                              AppsDialog(self.root,g,l,self._at,self._autosave)
+                              AppsDialog(self.root,g,l,self._at,self._autosave,
+                                         all_groups=self.cfg["groups"])
                       ).pack(side="right")
         else:
             tk.Label(card,text="Controls the entire PC volume",
@@ -2813,7 +3021,12 @@ class App:
         def _cmd(val):
             group["volume"]=float(val); group["muted"]=False
             lbl.config(text=self._vt(group),fg=color)
-            apply_vol(group,self.cfg); self._autosave()
+            apply_vol(group,self.cfg)
+            # Debounce disk writes — only save 300ms after last slider move
+            if hasattr(self,"_slider_job") and self._slider_job:
+                try: self.root.after_cancel(self._slider_job)
+                except: pass
+            self._slider_job = self.root.after(300, self._autosave)
         return _cmd
 
     def _mk_mute(self,group,btn,lbl,color):
@@ -2877,7 +3090,8 @@ class App:
         self._redraw()
         if self.cfg["mode"]=="single":
             self._sb.pack(fill="x")
-            self._knob_panel.pack(fill="x")
+            # Pack knob panel BEFORE the groups canvas frame to ensure it's above
+            self._knob_panel.pack(fill="x", before=self._groups_cf)
         else:
             self._sb.pack_forget()
             self._knob_panel.pack_forget()
@@ -3101,8 +3315,34 @@ class App:
             except: pass
 
     def _refresh_loop(self):
-        self._sync()
-        self.root.after(500,self._refresh_loop)
+        # Only sync UI when window is actually visible — saves CPU when in tray
+        if self.root.winfo_viewable():
+            self._sync()
+        self.root.after(500, self._refresh_loop)
+
+    def _sync_mute_states(self):
+        """On startup, clear any saved mute state for per-app groups.
+        ISimpleAudioVolume has no reliable GetMute() for per-app audio.
+        Always reset to unmuted on launch so state matches reality (#18)."""
+        changed = False
+        for g in self.cfg.get("groups", []):
+            if g.get("master_volume"): continue
+            if g.get("muted", False):
+                g["muted"] = False
+                apply_vol(g, self.cfg)
+                changed = True
+        if changed:
+            save_cfg(self.cfg)
+            self.root.after(0, self._sync)
+
+    def _hook_health_check(self):
+        """Every 10s check hook thread is alive — restart if dead (e.g. after sleep)."""
+        if not _HOOK._running or (_HOOK._thread and not _HOOK._thread.is_alive()):
+            print("[Hook] Health check: hook dead — restarting")
+            _HOOK._running = False
+            _HOOK.start()
+            self.hk.reload(self.cfg, self._on_vol, self._on_switch)
+        self.root.after(3000, self._hook_health_check)
 
     # ── Autosave ──────────────────────────────────────────────────────────────
     def _autosave(self):
@@ -3159,119 +3399,257 @@ class App:
         if self._settings_open():
             self._settings_win.destroy()
         self.root.withdraw()
-    def _show(self,*_): self.root.after(0,self.root.deiconify); self.root.after(0,self.root.lift)
+    def _show(self,*_):
+        def _do_show():
+            # Bring main window
+            self.root.deiconify()
+            self.root.lift()
+            self.root.focus_force()
+            # Also bring any open child windows (settings, edit apps etc)
+            for w in self.root.winfo_children():
+                if isinstance(w, tk.Toplevel) and w.winfo_exists():
+                    try:
+                        w.deiconify()
+                        w.lift()
+                    except: pass
+        self.root.after(0, _do_show)
     def _quit(self,*_):
         if self._settings_open():
             self._settings_win.destroy()
         self.hk.stop(); _HOOK.stop(); self.tray.stop(); self.root.after(0,self.root.destroy)
 
-    def run(self): self.root.mainloop()
+    def run(self):
+        self.root.after(3000, self._hook_health_check)
+        self.root.after(2000, self._sync_mute_states)  # wait for audio sessions to init
+        self.root.mainloop()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Apps Dialog
 # ══════════════════════════════════════════════════════════════════════════════
 class AppsDialog(tk.Toplevel):
-    def __init__(self,parent,group,apps_lbl,summary_fn,save_fn):
+    """Redesigned apps dialog:
+    - Top: scrollable list of ADDED apps with ✕ to remove each
+    - Middle: manual add field
+    - Bottom: all open apps (with/without sound) as quick-add buttons
+    """
+    def __init__(self, parent, group, apps_lbl, summary_fn, save_fn, all_groups=None):
         super().__init__(parent)
-        self.group=group; self.apps_lbl=apps_lbl
-        self.summary_fn=summary_fn; self.save_fn=save_fn
-        self.title(f"Apps — {group.get('name','Group')}")
-        self.configure(bg=BG); self.geometry("460x520")
-        self.resizable(True,True); self.grab_set(); self._build()
+        self.group      = group
+        self.apps_lbl   = apps_lbl
+        self.summary_fn = summary_fn
+        self.save_fn    = save_fn
+        self.all_groups = all_groups or []  # for duplicate detection (#9)
+        # Working copy of apps — edit in memory, save on Save
+        self._apps = list(group.get("apps", []))
+        self.title(f"Edit Apps — {group.get('name','Group')}")
+        self.configure(bg=BG)
+        self.geometry("480x560")
+        self.resizable(True, True)
+        self.grab_set()
+        self._build()
 
     def _build(self):
-        # ── Top: manual text entry ────────────────────────────────────────────
-        tk.Label(self,text="App process names, one per line (no .exe):",
-                 font=("Segoe UI",9),fg=TEXT,bg=BG).pack(padx=12,pady=(12,4),anchor="w")
-        self._txt=tk.Text(self,font=("Consolas",9),bg=PANEL,fg=TEXT,
-                          insertbackground=TEXT,relief="flat",height=6,
-                          padx=6,pady=6)
-        self._txt.pack(fill="x",padx=12)
-        self._txt.insert("1.0","\n".join(self.group.get("apps",[])))
+        # ── Section 1: Added apps (top, expandable) ──────────────────────────
+        hdr1 = tk.Frame(self, bg=BG); hdr1.pack(fill="x", padx=12, pady=(10,2))
+        tk.Label(hdr1, text="Added apps:", font=("Segoe UI",9,"bold"),
+                 fg=TEXT, bg=BG).pack(side="left")
+        tk.Label(hdr1, text="click ✕ to remove",
+                 font=("Segoe UI",8), fg=SUBTEXT, bg=BG).pack(side="left", padx=6)
 
-        # ── Middle: all running audio apps in a scrollable area ───────────────
-        hdr=tk.Frame(self,bg=BG); hdr.pack(fill="x",padx=12,pady=(8,2))
-        tk.Label(hdr,text="Currently making sound — click to add:",
-                 font=("Segoe UI",8),fg=SUBTEXT,bg=BG).pack(side="left")
-        tk.Button(hdr,text="↻ Refresh",font=("Segoe UI",7),bg=BORDER,fg=SUBTEXT,
-                  relief="flat",cursor="hand2",padx=4,pady=1,
-                  command=self._refresh_r).pack(side="right")
+        # Scrollable list of added apps
+        added_outer = tk.Frame(self, bg=PANEL, highlightthickness=1,
+                               highlightbackground=BORDER)
+        added_outer.pack(fill="both", expand=True, padx=12, pady=(0,4))
+        self._added_canvas = tk.Canvas(added_outer, bg=PANEL,
+                                       highlightthickness=0, height=140)
+        added_sb = tk.Scrollbar(added_outer, orient="vertical",
+                                command=self._added_canvas.yview)
+        self._added_canvas.configure(yscrollcommand=added_sb.set)
+        self._added_canvas.pack(side="left", fill="both", expand=True)
+        added_sb.pack(side="right", fill="y")
+        self._added_inner = tk.Frame(self._added_canvas, bg=PANEL)
+        self._added_cwin  = self._added_canvas.create_window(
+            (0,0), window=self._added_inner, anchor="nw")
+        self._added_inner.bind("<Configure>", lambda e: (
+            self._added_canvas.configure(
+                scrollregion=self._added_canvas.bbox("all")),
+            self._added_canvas.itemconfig(
+                self._added_cwin, width=self._added_canvas.winfo_width())))
+        self._added_canvas.bind("<Configure>", lambda e:
+            self._added_canvas.itemconfig(self._added_cwin, width=e.width))
+        self._added_canvas.bind("<MouseWheel>", lambda e:
+            self._added_canvas.yview_scroll(int(-1*e.delta/120), "units"))
+        self._refresh_added()
 
-        # Scrollable canvas for running apps — shows ALL of them
-        rf_outer=tk.Frame(self,bg=PANEL,highlightthickness=1,
-                          highlightbackground=BORDER)
-        rf_outer.pack(fill="both",expand=True,padx=12,pady=(0,4))
+        # ── Section 2: Manual add ─────────────────────────────────────────────
+        mf = tk.Frame(self, bg=BG); mf.pack(fill="x", padx=12, pady=(4,2))
+        tk.Label(mf, text="Add manually (process name, no .exe):",
+                 font=("Segoe UI",8), fg=SUBTEXT, bg=BG).pack(anchor="w")
+        mf2 = tk.Frame(mf, bg=BG); mf2.pack(fill="x", pady=(2,0))
+        self._manual_var = tk.StringVar()
+        manual_entry = tk.Entry(mf2, textvariable=self._manual_var,
+                                font=("Consolas",9), bg=PANEL, fg=TEXT,
+                                insertbackground=TEXT, relief="flat")
+        manual_entry.pack(side="left", fill="x", expand=True, padx=(0,4))
+        manual_entry.bind("<Return>", lambda e: self._add_manual())
+        tk.Button(mf2, text="Add", font=("Segoe UI",8), bg=BORDER, fg=TEXT,
+                  relief="flat", cursor="hand2", padx=8,
+                  command=self._add_manual).pack(side="left")
 
-        self._canvas=tk.Canvas(rf_outer,bg=PANEL,highlightthickness=0,
-                               height=160)
-        sb=tk.Scrollbar(rf_outer,orient="vertical",command=self._canvas.yview)
-        self._canvas.configure(yscrollcommand=sb.set)
-        self._canvas.pack(side="left",fill="both",expand=True)
-        sb.pack(side="right",fill="y")
+        # ── Section 3: Open apps quick-add ───────────────────────────────────
+        hdr2 = tk.Frame(self, bg=BG); hdr2.pack(fill="x", padx=12, pady=(8,2))
+        tk.Label(hdr2, text="Open apps — click to add:",
+                 font=("Segoe UI",8), fg=SUBTEXT, bg=BG).pack(side="left")
+        tk.Button(hdr2, text="↻ Refresh", font=("Segoe UI",7), bg=BORDER,
+                  fg=SUBTEXT, relief="flat", cursor="hand2", padx=4, pady=1,
+                  command=self._refresh_open).pack(side="right")
 
-        self._rf=tk.Frame(self._canvas,bg=PANEL)
-        self._cwin=self._canvas.create_window((0,0),window=self._rf,anchor="nw")
-        self._rf.bind("<Configure>",lambda e:(
-            self._canvas.configure(scrollregion=self._canvas.bbox("all")),
-            self._canvas.itemconfig(self._cwin,width=self._canvas.winfo_width())))
-        self._canvas.bind("<Configure>",lambda e:
-            self._canvas.itemconfig(self._cwin,width=e.width))
-        self._canvas.bind("<MouseWheel>",lambda e:
-            self._canvas.yview_scroll(int(-1*e.delta/120),"units"))
-
-        self._refresh_r()
+        open_outer = tk.Frame(self, bg=PANEL, highlightthickness=1,
+                              highlightbackground=BORDER)
+        open_outer.pack(fill="x", padx=12, pady=(0,4))
+        self._open_canvas = tk.Canvas(open_outer, bg=PANEL,
+                                      highlightthickness=0, height=120)
+        open_sb = tk.Scrollbar(open_outer, orient="vertical",
+                               command=self._open_canvas.yview)
+        self._open_canvas.configure(yscrollcommand=open_sb.set)
+        self._open_canvas.pack(side="left", fill="both", expand=True)
+        open_sb.pack(side="right", fill="y")
+        self._open_inner = tk.Frame(self._open_canvas, bg=PANEL)
+        self._open_cwin  = self._open_canvas.create_window(
+            (0,0), window=self._open_inner, anchor="nw")
+        self._open_inner.bind("<Configure>", lambda e: (
+            self._open_canvas.configure(
+                scrollregion=self._open_canvas.bbox("all")),
+            self._open_canvas.itemconfig(
+                self._open_cwin, width=self._open_canvas.winfo_width())))
+        self._open_canvas.bind("<Configure>", lambda e:
+            self._open_canvas.itemconfig(self._open_cwin, width=e.width))
+        self._open_canvas.bind("<MouseWheel>", lambda e:
+            self._open_canvas.yview_scroll(int(-1*e.delta/120), "units"))
+        self._refresh_open()
 
         # ── Bottom: save/cancel ───────────────────────────────────────────────
-        bf=tk.Frame(self,bg=BG); bf.pack(fill="x",padx=12,pady=(4,10))
-        tk.Button(bf,text="Save",font=("Segoe UI",10,"bold"),bg="#1DB954",fg="white",
-                  relief="flat",cursor="hand2",padx=18,pady=4,
-                  command=self._save).pack(side="left")
-        tk.Button(bf,text="Cancel",font=("Segoe UI",10),bg=BORDER,fg=TEXT,
-                  relief="flat",cursor="hand2",padx=12,pady=4,
-                  command=self.destroy).pack(side="left",padx=6)
+        bf = tk.Frame(self, bg=BG); bf.pack(fill="x", padx=12, pady=(4,10))
+        tk.Button(bf, text="Save", font=("Segoe UI",10,"bold"),
+                  bg="#1DB954", fg="white", relief="flat", cursor="hand2",
+                  padx=18, pady=4, command=self._save).pack(side="left")
+        tk.Button(bf, text="Cancel", font=("Segoe UI",10), bg=BORDER, fg=TEXT,
+                  relief="flat", cursor="hand2", padx=12, pady=4,
+                  command=self.destroy).pack(side="left", padx=6)
 
-    def _refresh_r(self):
-        for w in self._rf.winfo_children(): w.destroy()
-        apps=running_audio_apps()
-        already=[l.strip() for l in self._txt.get("1.0","end").splitlines() if l.strip()]
-        if not apps:
-            tk.Label(self._rf,text="  (no apps making sound right now)",
-                     font=("Segoe UI",8),fg=SUBTEXT,bg=PANEL,
+    def _refresh_added(self):
+        """Redraw the added apps list with ✕ buttons."""
+        for w in self._added_inner.winfo_children(): w.destroy()
+        if not self._apps:
+            tk.Label(self._added_inner, text="  No apps added yet",
+                     font=("Segoe UI",8), fg=SUBTEXT, bg=PANEL,
                      pady=8).pack(anchor="w")
             return
-        # Wrap buttons into rows of 3
-        cols=3; row_f=None
-        for i,a in enumerate(sorted(apps)):
-            if i % cols == 0:
-                row_f=tk.Frame(self._rf,bg=PANEL)
-                row_f.pack(fill="x",padx=4,pady=1)
-            already_added = a in already
-            btn=tk.Button(row_f,
-                text=f"✓ {a}" if already_added else f"+ {a}",
-                font=("Consolas",8),
-                bg="#1a3a1a" if already_added else BORDER,
-                fg="#1DB954" if already_added else TEXT,
-                activebackground=HOVER,relief="flat",cursor="hand2",
-                padx=6,pady=2,width=14)
-            btn.pack(side="left",padx=(0,4))
-            if not already_added:
-                btn.config(command=lambda n=a,b=btn: self._add(n,b))
+        for app in list(self._apps):
+            row = tk.Frame(self._added_inner, bg=PANEL)
+            row.pack(fill="x", padx=6, pady=1)
+            tk.Label(row, text=app, font=("Consolas",9), fg=TEXT,
+                     bg=PANEL).pack(side="left", padx=4)
+            def _rm(a=app):
+                if a in self._apps: self._apps.remove(a)
+                self._refresh_added()
+                self._refresh_open()
+            tk.Button(row, text="✕", font=("Segoe UI",8), bg=PANEL,
+                      fg="#555", activebackground=BORDER,
+                      activeforeground="#ff6b6b", relief="flat",
+                      cursor="hand2", padx=4,
+                      command=_rm).pack(side="right")
 
-    def _add(self,name,btn=None):
-        cur=self._txt.get("1.0","end").strip()
-        if name not in [l.strip() for l in cur.splitlines() if l.strip()]:
-            self._txt.insert("end",f"\n{name}" if cur else name)
-        if btn:
-            btn.config(text=f"✓ {name}",bg="#1a3a1a",fg="#1DB954",
-                       command=lambda:None)
+    def _get_open_apps(self):
+        """Get ALL open apps with audio sessions — not just ones making sound."""
+        try:
+            comtypes.CoInitialize()
+            apps = set()
+            for s in AudioUtilities.GetAllSessions():
+                if s.Process is None: continue
+                try:
+                    name = s.Process.name().lower().removesuffix(".exe")
+                    apps.add(name)
+                except: pass
+            return sorted(apps)
+        except: return []
+        finally:
+            try: comtypes.CoUninitialize()
+            except: pass
+
+    def _refresh_open(self):
+        """Show all open apps — including ones not currently making sound."""
+        for w in self._open_inner.winfo_children(): w.destroy()
+        apps = self._get_open_apps()
+        if not apps:
+            tk.Label(self._open_inner,
+                     text="  (no apps with audio sessions found)",
+                     font=("Segoe UI",8), fg=SUBTEXT, bg=PANEL,
+                     pady=6).pack(anchor="w")
+            return
+        cols = 3; row_f = None
+        for i, a in enumerate(apps):
+            if i % cols == 0:
+                row_f = tk.Frame(self._open_inner, bg=PANEL)
+                row_f.pack(fill="x", padx=4, pady=1)
+            already_added = a in self._apps
+            # Check if in another group (#9)
+            in_other = any(
+                a in g.get("apps",[]) and g is not self.group
+                for g in self.all_groups
+            )
+            if already_added:
+                lbl = f"✓ {a}"
+                bg, fg = "#1a3a1a", "#1DB954"
+            elif in_other:
+                lbl = f"⚠ {a}"
+                bg, fg = "#3a2a1a", "#FFA500"
+            else:
+                lbl = f"+ {a}"
+                bg, fg = BORDER, TEXT
+            btn = tk.Button(row_f, text=lbl, font=("Consolas",8),
+                            bg=bg, fg=fg, activebackground=HOVER,
+                            relief="flat", cursor="hand2",
+                            padx=6, pady=2, width=14)
+            btn.pack(side="left", padx=(0,4))
+            if not already_added:
+                def _add(n=a, b=btn, other=in_other):
+                    if other:
+                        import tkinter.messagebox as _mb
+                        if not _mb.askyesno("Already in another group",
+                            f"'{n}' is already in another group.\n"
+                            "Adding it here may cause conflicts.\nContinue?",
+                            parent=self):
+                            return
+                    self._apps.append(n)
+                    self._refresh_added()
+                    self._refresh_open()
+                btn.config(command=_add)
+
+    def _add_manual(self):
+        """Add app from manual entry field."""
+        name = self._manual_var.get().strip().lower().removesuffix(".exe")
+        if not name: return
+        if name in self._apps:
+            self._manual_var.set("")
+            return
+        self._apps.append(name)
+        self._manual_var.set("")
+        self._refresh_added()
+        self._refresh_open()
 
     def _save(self):
-        lines=[l.strip().lower() for l in
-               self._txt.get("1.0","end").splitlines() if l.strip()]
-        self.group["apps"]=lines
+        self.group["apps"] = list(self._apps)
         self.apps_lbl.config(text=self.summary_fn(self.group))
-        self.save_fn(); self.destroy()
+        self.save_fn()
+        self.grab_release()
+        self.destroy()
+
+    def destroy(self):
+        try: self.grab_release()
+        except: pass
+        super().destroy()
 
 
 # ── Analytics & Update checker ───────────────────────────────────────────────
@@ -3282,7 +3660,7 @@ class AppsDialog(tk.Toplevel):
 #
 # GITHUB_REPO: your GitHub username/repo — used for update checks.
 # Set both before building your public release.
-ANALYTICS_URL = "https://knobmixer-analytics.bdhhair11.workers.dev/ping"
+ANALYTICS_URL = "https://knobmixer-analytics.bdhhair11.workers.dev/ping"  # your Cloudflare Worker URL
 GITHUB_REPO   = "KnobMixer/KnobMixer"
 UPDATE_CHECK  = True        # set False to disable update checks entirely
 
