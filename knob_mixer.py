@@ -5,54 +5,34 @@ https://github.com/KnobMixer/KnobMixer
 """
 
 import sys, os, json, threading, winreg, ctypes, time, math, struct, wave, io, copy
+import queue as _queue
 from pathlib import Path
 
 def _can_import(mod):
     try: __import__(mod); return True
     except ImportError: return False
 
-def _ensure_deps(): pass
-_ensure_deps()
-
-def _cleanup_temp_wavs():
-    """Remove any leftover KnobMixer temp WAV files from crashed sessions."""
-    import tempfile, glob, time
-    try:
-        tmp_dir = tempfile.gettempdir()
-        for f in glob.glob(os.path.join(tmp_dir, "*.wav")):
-            try:
-                # Only remove files older than 60 seconds (not currently playing)
-                if time.time() - os.path.getmtime(f) > 60:
-                    os.unlink(f)
-            except: pass
-    except: pass
-
-_ensure_deps()
-
-def _cleanup_temp_wavs():
+def _ensure_deps():
     import subprocess
-    needed = {"pycaw":"pycaw","comtypes":"comtypes","keyboard":"keyboard",
-              "pystray":"pystray","PIL":"Pillow","psutil":"psutil"}
+    needed = {"pycaw":"pycaw","comtypes":"comtypes","keyboard":"keyboard","pystray":"pystray","PIL":"Pillow","psutil":"psutil"}
     missing = [pkg for mod,pkg in needed.items() if not _can_import(mod)]
     if missing:
         import tkinter as tk, tkinter.messagebox as mb
         r=tk.Tk(); r.withdraw()
-        mb.showinfo("KnobMixer","Installing components (one-time ~30s)…"); r.destroy()
+        mb.showinfo("KnobMixer","Installing components (one-time ~30s)..."); r.destroy()
         for pkg in missing:
             subprocess.check_call([sys.executable,"-m","pip","install",pkg,"-q"],
                                   creationflags=subprocess.CREATE_NO_WINDOW)
 _ensure_deps()
 
 def _cleanup_temp_wavs():
-    """Remove any leftover KnobMixer temp WAV files from crashed sessions."""
-    import tempfile, glob, time
+    """Remove leftover temp WAV files from crashed sessions."""
+    import tempfile, glob
     try:
         tmp_dir = tempfile.gettempdir()
-        for f in glob.glob(os.path.join(tmp_dir, "*.wav")):
+        for f in glob.glob(os.path.join(tmp_dir, "tmp*.wav")):
             try:
-                # Only remove files older than 60 seconds (not currently playing)
-                if time.time() - os.path.getmtime(f) > 60:
-                    os.unlink(f)
+                if time.time() - os.path.getmtime(f) > 60: os.unlink(f)
             except: pass
     except: pass
 
@@ -787,6 +767,10 @@ def _foreground_exe():
         if name in _skip: return None
         return name
     except: return None
+
+# ── Audio worker queue ──────────────────────────────────────────────────────
+_audio_q              = _queue.Queue(maxsize=4)
+_audio_worker_running = False
 
 def _audio_queue_push(fn):
     """Push audio op to worker. If queue full, drop oldest (stale) entry."""
