@@ -1,6 +1,6 @@
 # KnobMixer
 
-**Free per-app volume control for keyboard knobs & hotkeys — Windows**
+**Free app volume control for keyboard knobs & hotkeys — Windows**
 
 Control the volume of individual apps independently. Turn one knob for your game, another for Discord, another for your browser — all at the same time.
 
