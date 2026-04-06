@@ -788,40 +788,6 @@ def _foreground_exe():
         return name
     except: return None
 
-def _find_game_process():
-    """Find a running game by checking process priority.
-    Games typically run at HIGH or ABOVE_NORMAL priority."""
-    try:
-        import psutil as _ps
-        _skip = {"knobmixer","explorer","svchost","system","csrss","winlogon",
-                 "services","lsass","smss","wininit","fontdrvhost","dwm",
-                 "searchhost","runtimebroker","discord","chrome","firefox",
-                 "msedge","opera","brave","spotify","teams","slack","zoom",
-                 "python","pythonw","conhost","cmd","powershell"}
-        HIGH_PRIORITY  = 0x00000080
-        ABOVE_NORMAL   = 0x00008000
-        for proc in _ps.process_iter(["name","pid"]):
-            try:
-                name = proc.info["name"].lower().removesuffix(".exe")
-                if name in _skip: continue
-                # Check Windows process priority class
-                handle = ctypes.windll.kernel32.OpenProcess(0x0400, False, proc.info["pid"])
-                if handle:
-                    try:
-                        pc = ctypes.windll.kernel32.GetPriorityClass(handle)
-                        if pc in (HIGH_PRIORITY, ABOVE_NORMAL):
-                            return name
-                    finally:
-                        ctypes.windll.kernel32.CloseHandle(handle)  # always close (#7)
-            except: continue
-    except: pass
-    return None
-
-# ── Audio worker queue — prevents thread pile-up on rapid hotkey spam ────────
-import queue as _queue
-_audio_q     = _queue.Queue(maxsize=4)   # max 4 pending ops; extras dropped
-_audio_worker_running = False
-
 def _audio_queue_push(fn):
     """Push audio op to worker. If queue full, drop oldest (stale) entry."""
     try:
