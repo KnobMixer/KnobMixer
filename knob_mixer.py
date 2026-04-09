@@ -1,5 +1,5 @@
 """
-KnobMixer v2.7.2
+KnobMixer v2.7.3
 Free per-app volume control for keyboard knobs and hotkeys.
 https://github.com/KnobMixer/KnobMixer
 """
@@ -316,7 +316,7 @@ _HOOK = GlobalHookManager()
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 APP_NAME    = "KnobMixer"
-APP_VER     = "2.7.2"
+APP_VER     = "2.7.3"
 APPDATA_DIR = Path(os.getenv("APPDATA",".")) / APP_NAME
 APPDATA_DIR.mkdir(parents=True, exist_ok=True)
 CONFIG_FILE = APPDATA_DIR / "config.json"
@@ -335,28 +335,37 @@ HOVER   = "#252535"
 # Params: (freq, dur_ms, vol_scale)
 # Mute = lower/darker tone, Unmute = brighter/higher tone
 SOUND_PRESETS = [
-    ("Chime",      "bell",   (523, 95,  1.0), (784, 85,  1.0)),  # gentle warm bell
-    ("Ding",       "bell",   (392, 75,  1.0), (880, 65,  1.0)),  # lower ding → bright ping
-    ("Marimba",    "marimba",(330, 80,  1.0), (523, 75,  1.0)),  # wooden marimba bar hit
     ("Soft Ping",  "ping",   (660, 60,  1.0), (990, 55,  1.0)),  # light ping notification
-    ("Glass",      "glass",  (880,100,  1.0),(1175,90,  1.0)),  # glass tap, crystal
-    ("Synth",      "synth",  (220, 70,  1.0), (440, 65,  1.0)),  # soft synth pad hit
 ]
+# Volume scale: user sees 1-5, internally maps to actual vol multiplier
+# 1=quiet(0.028) 2=low(0.056) 3=medium(0.112) 4=loud(0.196) 5=max(0.3)
+_VOL_SCALE = {1: 0.028, 2: 0.056, 3: 0.112, 4: 0.196, 5: 0.3}
+def _vol_from_level(level): return _VOL_SCALE.get(int(level), 0.056)
+def _level_from_vol(vol):
+    """Reverse map raw vol to nearest 1-5 level."""
+    best = 2
+    best_diff = abs(vol - _VOL_SCALE[2])
+    for lvl, v in _VOL_SCALE.items():
+        diff = abs(vol - v)
+        if diff < best_diff:
+            best_diff = diff; best = lvl
+    return best
 
 DEFAULT_CFG = {
     "version": 4,
-    "mode": "multi",
+    "mode": "single",
     "start_minimized": True,
     "show_overlay": True,
+    "tutorial_seen": False,
     "analytics_enabled": True,
-    "overlay_size": 1.0,
+    "overlay_size": 0.7,
     "overlay_x": -1,
     "overlay_y": -1,
     "slowdown_enabled": True,
     "slowdown_threshold": 10,
     "slowdown_step": 0.5,
     "single_default_group": 0,
-    "single_timeout": 60,
+    "single_timeout": 30,
     "single_auto_revert": False,
     "hw_knob_enabled": False,
     "hw_knob_group": 0,
@@ -367,7 +376,7 @@ DEFAULT_CFG = {
     "mic_device_name": "System Default",
     "mic_hotkey": "f9",
     "mic_start_muted": False,
-    "mic_sound_volume": 0.15,
+    "mic_sound_volume": 0.056,
     "mic_sound_preset": 0,
     "mic_icon_x": -1,
     "mic_icon_y": -1,
@@ -382,12 +391,12 @@ DEFAULT_CFG = {
          "single_key":"","step":5,"volume":80,"muted":False,"_vbm":80,
          "foreground_mode":False,"enabled":True,"is_default":True},
         {"id":1,"name":"Media","color":"#1DB954",
-         "apps":["chrome","spotify","firefox","msedge","vlc","opera","brave"],
+         "apps":["spotify","chrome"],
          "keys":{"vol_down":"","vol_up":"","mute":""},
          "single_key":"","step":5,"volume":80,"muted":False,"_vbm":80,
          "foreground_mode":False,"enabled":True,"is_default":False},
         {"id":2,"name":"Chat","color":"#5865F2",
-         "apps":["discord","teams","slack","zoom","skype","telegram"],
+         "apps":["discord"],
          "keys":{"vol_down":"","vol_up":"","mute":""},
          "single_key":"","step":5,"volume":80,"muted":False,"_vbm":80,
          "foreground_mode":False,"enabled":True,"is_default":False},
@@ -418,23 +427,23 @@ def load_cfg():
                     if g["keys"].get(a,"").lower().strip() in _BAD_HOTKEYS:
                         print(f"[Config] Cleared bad hotkey in {g.get('name','')} {a}")
                         g["keys"][a] = ""
-            for k,v in [("overlay_size",1.0),("overlay_x",-1),("overlay_y",-1),("slowdown_enabled",True),
+            for k,v in [("overlay_size",0.7),("overlay_x",-1),("overlay_y",-1),("slowdown_enabled",True),
                         ("slowdown_threshold",10),("slowdown_step",0.5),
-                        ("single_default_group",0),("single_timeout",60),("single_auto_revert",False),("hw_knob_enabled",False),("hw_knob_group",0),("cycle_key",""),
+                        ("single_default_group",0),("single_timeout",30),("single_auto_revert",False),("hw_knob_enabled",False),("hw_knob_group",0),("cycle_key",""),
                         ("single_keys",{"vol_down":"","vol_up":"","mute":""}),
                         ("mic_enabled",True),("mic_device",""),("mic_hotkey","f9"),
-                        ("mic_start_muted",False),("mic_sound_volume",0.6),
+                        ("mic_start_muted",False),("mic_sound_volume",0.056),
                         ("mic_sound_preset",0),("mic_icon_x",-1),("mic_icon_y",-1),
                         ("mic_icon_size",40),("mic_icon_alpha",0.85),
                         ("mic_icon_style","circle"),("mode","multi"),
-                        ("start_minimized",True),("show_overlay",True),("analytics_enabled",True)]:
+                        ("start_minimized",True),("show_overlay",True),("tutorial_seen",False),("analytics_enabled",True)]:
                 d.setdefault(k,v)
             # Clamp numeric values to safe ranges
             for g in d.get("groups", []):
                 g["volume"] = max(0.0, min(100.0, float(g.get("volume", 80))))
                 g["step"]   = max(1,   min(20,    int(g.get("step", 5))))
                 g.setdefault("volume", 80.0)
-            d["overlay_size"]        = max(0.5, min(3.0, float(d.get("overlay_size", 1.0))))
+            d["overlay_size"]        = max(0.5, min(3.0, float(d.get("overlay_size", 0.7))))
             d["slowdown_threshold"]  = max(1,   min(50,  int(d.get("slowdown_threshold", 10))))
             d["slowdown_step"]       = max(0.1, min(10.0,float(d.get("slowdown_step", 0.5))))
             return d
@@ -468,6 +477,8 @@ def set_startup(en):
                 except FileNotFoundError: pass
         return True
     except: return False
+
+
 
 def get_startup():
     try:
@@ -1019,7 +1030,7 @@ class MicCtrl:
                 except Exception as e:
                     print(f"[Mic set] {e}")
             _audio_queue_push(_w)
-            vol = cfg.get("mic_sound_volume", 0.6)
+            vol = cfg.get("mic_sound_volume", 0.056)
             preset = cfg.get("mic_sound_preset", 0)
             play_preset(preset, vol, muted)
 
@@ -1450,9 +1461,17 @@ def draw_mic_icon(style, muted, size):
 # ── Volume overlay ────────────────────────────────────────────────────────────
 class VolumeOverlay:
     def __init__(self, root):
-        self._root=root; self._win=None; self._job=None
-        self._cfg=None   # set by App after creation
-        self._drag=None  # drag start (x,y,wx,wy)
+        self._root  = root
+        self._win   = None
+        self._job   = None
+        self._cfg   = None
+        self._drag  = None
+        # Persistent label refs — updated in-place, no rebuild flicker
+        self._lbl_name  = None
+        self._lbl_vol   = None
+        self._bar_bg    = None
+        self._bar_fg    = None
+        self._last_scale = None
 
     def _force_topmost(self):
         """Force window above fullscreen games. HWND_TOPMOST + NOACTIVATE.
@@ -1477,55 +1496,99 @@ class VolumeOverlay:
         except Exception:
             pass
 
+    def _build_window(self, scale):
+        """Build the persistent popup window once."""
+        if self._win and self._win.winfo_exists():
+            return
+        self._win = tk.Toplevel(self._root)
+        self._win.overrideredirect(True)
+        self._win.attributes("-topmost", True)
+        self._win.attributes("-alpha", 0.92)
+        self._win.configure(bg="#12121e")
+        self._last_scale = scale
+
+        pad = max(8, int(16*scale))
+        fsz = max(10, int(28*scale))
+        nsz = max(8, int(9*scale))
+        bw  = max(60, int(140*scale))
+
+        f = tk.Frame(self._win, bg="#12121e", padx=pad,
+                     pady=max(8, int(10*scale)))
+        f.pack()
+        self._lbl_name = tk.Label(f, text="", font=("Segoe UI",nsz,"bold"),
+                                   fg=TEXT, bg="#12121e")
+        self._lbl_name.pack()
+        self._lbl_vol  = tk.Label(f, text="", font=("Segoe UI",fsz,"bold"),
+                                   fg=TEXT, bg="#12121e")
+        self._lbl_vol.pack()
+        # Progress bar background (always present, hidden when muted)
+        self._bar_bg = tk.Frame(f, bg="#2a2a3e",
+                                height=max(3,int(4*scale)), width=bw)
+        self._bar_bg.pack(pady=(3,0))
+        self._bar_bg.pack_propagate(False)
+        self._bar_fg = tk.Frame(self._bar_bg, bg=TEXT,
+                                height=max(3,int(4*scale)), width=2)
+        self._bar_fg.place(x=0, y=0)
+        self._bw = bw
+
+        # Bind drag
+        self._win.bind("<ButtonPress-1>",   self._drag_start)
+        self._win.bind("<B1-Motion>",       self._drag_move)
+        self._win.bind("<ButtonRelease-1>", self._drag_end)
+        self._win.after(10, self._force_topmost)
+        self._win.after(2000, self._keep_overlay_topmost)
+
+    def _keep_overlay_topmost(self):
+        """Re-assert topmost every 2s but ONLY when popup is actually visible."""
+        if self._win and self._win.winfo_exists():
+            if self._win.winfo_ismapped():  # only when visible
+                self._force_topmost()
+            self._win.after(2000, self._keep_overlay_topmost)
+
     def show(self, name, color, volume, muted, scale=1.0):
-        if self._win is None or not self._win.winfo_exists():
-            self._win=tk.Toplevel(self._root)
-            self._win.overrideredirect(True)
-            self._win.attributes("-topmost", True)
-            self._win.attributes("-alpha", 0.92)
-            self._win.configure(bg="#12121e")
-            # Apply Win32 flags so it shows over fullscreen games
-            self._win.after(10, self._force_topmost)
-        for w in self._win.winfo_children(): w.destroy()
+        # Rebuild if scale changed or window was destroyed
+        if (self._win is None or not self._win.winfo_exists()
+                or self._last_scale != scale):
+            if self._win and self._win.winfo_exists():
+                self._win.destroy()
+            self._win = None
+            self._lbl_name = self._lbl_vol = self._bar_bg = self._bar_fg = None
+            self._build_window(scale)
+
         text = "MUTED" if muted else f"{int(volume)}%"
         fg   = "#ff6b6b" if muted else color
-        pad  = max(8, int(16*scale))
-        fsz  = max(10, int(28*scale))
-        nsz  = max(8, int(9*scale))
-        bw   = max(60, int(140*scale))
-        f=tk.Frame(self._win,bg="#12121e",padx=pad,pady=max(8,int(10*scale))); f.pack()
-        tk.Label(f,text=name,font=("Segoe UI",nsz,"bold"),fg=color,bg="#12121e").pack()
-        tk.Label(f,text=text,font=("Segoe UI",fsz,"bold"),fg=fg,bg="#12121e").pack()
-        if not muted:
-            bg2=tk.Frame(f,bg="#2a2a3e",height=max(3,int(4*scale)),width=bw)
-            bg2.pack(pady=(3,0)); bg2.pack_propagate(False)
-            fw=max(2,int(bw*volume/100))
-            tk.Frame(bg2,bg=fg,height=max(3,int(4*scale)),width=fw).place(x=0,y=0)
-        self._win.update_idletasks()
-        ww=self._win.winfo_width(); wh=self._win.winfo_height()
-        ox = (self._cfg or {}).get("overlay_x", -1)
-        oy = (self._cfg or {}).get("overlay_y", -1)
-        if ox < 0 or oy < 0:
-            # Default: bottom-right of primary monitor
-            sw=self._win.winfo_screenwidth(); sh=self._win.winfo_screenheight()
-            ox = sw - ww - 20
-            oy = sh - wh - 60
-        # Don't clamp — allow any screen position including second monitors.
-        # Only clamp if clearly invalid (negative or absurdly large).
-        if ox < -3840: ox = 0
-        if oy < -2160: oy = 0
-        self._win.geometry(f"+{ox}+{oy}")
+
+        # Update labels in-place — no rebuild, no flicker
+        self._lbl_name.config(text=name, fg=color)
+        self._lbl_vol.config(text=text, fg=fg)
+
+        if muted:
+            self._bar_bg.pack_forget()
+        else:
+            fw = max(2, int(self._bw * volume / 100))
+            self._bar_fg.config(bg=fg, width=fw)
+            self._bar_bg.pack(pady=(3,0))
+
+        # Position — only set on first show or after drag
+        if not self._win.winfo_ismapped():
+            self._win.update_idletasks()
+            ww = self._win.winfo_reqwidth()
+            wh = self._win.winfo_reqheight()
+            ox = (self._cfg or {}).get("overlay_x", -1)
+            oy = (self._cfg or {}).get("overlay_y", -1)
+            if ox < 0 or oy < 0:
+                sw = self._win.winfo_screenwidth()
+                sh = self._win.winfo_screenheight()
+                ox = sw - ww - 20
+                oy = sh - wh - 60
+            if ox < -3840: ox = 0
+            if oy < -2160: oy = 0
+            self._win.geometry(f"+{ox}+{oy}")
+
         self._win.deiconify()
-        # Bind drag on first show
-        if not getattr(self, "_drag_bound", False):
-            self._drag_bound = True
-            self._win.bind("<ButtonPress-1>",   self._drag_start)
-            self._win.bind("<B1-Motion>",       self._drag_move)
-            self._win.bind("<ButtonRelease-1>", self._drag_end)
-        # Re-assert topmost on every show so it stays above the game
-        self._win.after(10, self._force_topmost)
+        self._force_topmost()
         if self._job: self._root.after_cancel(self._job)
-        self._job=self._root.after(2000, self._hide)
+        self._job = self._root.after(2000, self._hide)
 
     def _drag_start(self, e):
         self._drag = (e.x_root, e.y_root,
@@ -1620,10 +1683,10 @@ class MicOverlay:
             pass
 
     def _keep_topmost_mic(self):
-        """Re-assert topmost every 2 seconds so mic icon stays visible
-        even after fullscreen apps, media players, etc steal the top."""
+        """Re-assert topmost every 2s but only when mic icon is visible."""
         if self._win and self._win.winfo_exists():
-            self._force_topmost_mic()
+            if self._win.winfo_ismapped():
+                self._force_topmost_mic()
             self._win.after(2000, self._keep_topmost_mic)
 
     def _render(self):
@@ -1719,11 +1782,15 @@ class HotkeyEngine:
                     def _():
                         if not grp.get("enabled",True): return
                         with _cfg_lock:
-                            actual = _read_actual_vol(grp)
-                            if actual is not None and abs(actual - grp["volume"]) > 3:
-                                grp["volume"] = actual
-                            grp["volume"] = _calc_vol(grp["volume"], delta, cfg)
-                            grp["muted"]  = False
+                            if grp.get("muted"):
+                                # Resume from pre-mute volume, not 0
+                                grp["volume"] = grp.get("_vbm", 80)
+                                grp["muted"] = False
+                            else:
+                                actual = _read_actual_vol(grp)
+                                if actual is not None and abs(actual - grp["volume"]) > 3:
+                                    grp["volume"] = actual
+                                grp["volume"] = _calc_vol(grp["volume"], delta, cfg)
                         apply_vol(grp, cfg); on_vol(grp)
                     return _
 
@@ -1761,19 +1828,30 @@ class HotkeyEngine:
             def _up():
                 ag = ref.get("_active_group_ref")
                 if ag and ag.get("enabled",True):
-                    actual = _read_actual_vol(ag)
-                    if actual is not None and abs(actual - ag["volume"]) > 3:
-                        ag["volume"] = actual
-                    ag["volume"]=_calc_vol(ag["volume"],ag.get("step",5),ref)
-                    ag["muted"]=False; apply_vol(ag,ref); on_vol(ag)
+                    with _cfg_lock:
+                        if ag.get("muted"):
+                            # Resume from pre-mute volume, not 0
+                            ag["volume"] = ag.get("_vbm", 80)
+                            ag["muted"] = False
+                        else:
+                            actual = _read_actual_vol(ag)
+                            if actual is not None and abs(actual - ag["volume"]) > 3:
+                                ag["volume"] = actual
+                            ag["volume"] = _calc_vol(ag["volume"], ag.get("step",5), ref)
+                    apply_vol(ag,ref); on_vol(ag)
             def _dn():
                 ag = ref.get("_active_group_ref")
                 if ag and ag.get("enabled",True):
-                    actual = _read_actual_vol(ag)
-                    if actual is not None and abs(actual - ag["volume"]) > 3:
-                        ag["volume"] = actual
-                    ag["volume"]=_calc_vol(ag["volume"],-ag.get("step",5),ref)
-                    ag["muted"]=False; apply_vol(ag,ref); on_vol(ag)
+                    with _cfg_lock:
+                        if ag.get("muted"):
+                            ag["volume"] = ag.get("_vbm", 80)
+                            ag["muted"] = False
+                        else:
+                            actual = _read_actual_vol(ag)
+                            if actual is not None and abs(actual - ag["volume"]) > 3:
+                                ag["volume"] = actual
+                            ag["volume"] = _calc_vol(ag["volume"], -ag.get("step",5), ref)
+                    apply_vol(ag,ref); on_vol(ag)
             def _mu():
                 ag = ref.get("_active_group_ref")
                 if ag and ag.get("enabled",True):
@@ -1876,10 +1954,12 @@ def make_tray_img(groups, enabled=True, mic_muted=None):
 # Settings Window
 # ══════════════════════════════════════════════════════════════════════════════
 class SettingsWin(tk.Toplevel):
-    def __init__(self, parent, cfg, on_change):
+    def __init__(self, parent, cfg, on_change, quit_fn=None):
         super().__init__(parent)
         self.cfg = cfg
         self.on_change = on_change
+        self._quit_fn = quit_fn or (lambda: None)
+        self._parent = parent  # App root — used for scheduling after() on reset
         self.title("Settings — KnobMixer")
         self.configure(bg=BG)
         self.geometry("540x580")
@@ -2073,6 +2153,7 @@ class SettingsWin(tk.Toplevel):
         _line("Knob left   →  F13  (Vol-)", indent=1)
         _line("Knob right  →  F14  (Vol+)", indent=1)
         _line("Knob click  →  F15  (Mute)", indent=1)
+        _line("Repeat for each additional knob using the next available F-keys.", indent=1, color=SUBTEXT)
         _sep()
 
         _line("1-Knob Mode:", bold=True)
@@ -2082,7 +2163,7 @@ class SettingsWin(tk.Toplevel):
         _line("F12 key     →  F16  (Mute)", indent=1)
         _sep()
 
-        _line("Can't remap? Enable Hardware Knob in Settings → 1-Knob Mode.", color=SUBTEXT)
+        _line("Can't remap? Enable Hardware Knob in the main window.", color=SUBTEXT)
         _sep()
 
         # ── Step 2 ──────────────────────────────────────────────────────────
@@ -2116,11 +2197,12 @@ class SettingsWin(tk.Toplevel):
         _line("in keyboard software — pauses song instead of muting.", indent=1)
         _sep()
         _line("💡 Hardware knob (e.g. AULAF75)", bold=True)
-        _line("Enable Hardware Knob in Settings → 1-Knob Mode.", indent=1)
+        _line("Enable Hardware Knob in the main window.", indent=1)
+        _line("Make sure your knob is set to control volume — not other functions (e.g. RGB lighting).", indent=1, color=SUBTEXT)
         _line("Intercepts system volume keys — system volume stays untouched.", indent=1)
         _sep()
         _line("💡 No knob?", bold=True)
-        _line("Use any keyboard shortcut, stream deck key, or mouse button.", indent=1)
+        _line("Use any hotkey.", indent=1)
 
         txt.config(state="disabled")
 
@@ -2140,6 +2222,8 @@ class SettingsWin(tk.Toplevel):
                   lambda p: self._chk(p, self._v_startmin).pack(side="left"))
         self._row(sc, "Launch with Windows",
                   lambda p: self._chk(p, self._v_startup).pack(side="left"))
+
+
 
         self._sep(sc, "Volume Popup")
         self._row(sc, "Show popup when volume changes",
@@ -2256,35 +2340,49 @@ class SettingsWin(tk.Toplevel):
                   relief="flat", cursor="hand2", padx=8, pady=3,
                   command=_open_log_folder).pack(side="left", padx=(4,0))
 
-        self._sep(sc, "Reset All Keybinds")
-        tk.Label(sc, text="Clears all hotkeys in every group, mic toggle, and shared keys.",
+        self._sep(sc, "Reset All Settings")
+        tk.Label(sc, text="Resets everything to factory defaults — groups, hotkeys, "
+                          "all settings. The app will restart.",
                  font=("Segoe UI", 8), fg=SUBTEXT, bg=BG,
                  wraplength=420, justify="left").pack(padx=16, pady=(4,6), anchor="w")
         f_reset = tk.Frame(sc, bg=BG); f_reset.pack(fill="x", padx=16, pady=(0,8))
-        def _reset_keybinds():
+        def _reset_all():
             import tkinter.messagebox as _mb
-            if not _mb.askyesno("Reset Keybinds",
-                    "Clear ALL hotkeys?\nThis cannot be undone.",
+            if not _mb.askyesno("Reset All Settings",
+                    "This will reset KnobMixer to factory defaults.\n"
+                    "All groups, hotkeys, and settings will be cleared.\n\n"
+                    "The app will restart. Continue?",
                     parent=self): return
-            for g in self.cfg.get("groups",[]):
-                g["keys"] = {"vol_down":"","vol_up":"","mute":""}
-                g["single_key"] = ""
-            self.cfg["single_keys"] = {"vol_down":"","vol_up":"","mute":""}
-            self.cfg["cycle_key"]   = ""
-            self.cfg["mic_hotkey"]  = ""
-            self._apply()
-            _mb.showinfo("KnobMixer","All keybinds cleared.", parent=self)
-        tk.Button(f_reset, text="Reset All Keybinds",
+            try:
+                if CONFIG_FILE.exists():
+                    CONFIG_FILE.unlink()
+            except Exception as e:
+                _mb.showerror("Error", f"Could not reset settings:\n{e}", parent=self)
+                return
+            # Close settings window first so it doesn't interfere with quit
+            self.destroy()
+            # Schedule relaunch + quit on the App root window — not SettingsWin
+            # which is now destroyed and would cancel any after() calls
+            import subprocess
+            def _do_reset():
+                try:
+                    subprocess.Popen([EXE_PATH])
+                except Exception as e:
+                    print(f"[Reset] Relaunch failed: {e}")
+                # Always quit regardless of whether relaunch succeeded
+                self._quit_fn()
+            # Use the parent (root) window to schedule this safely
+            self._parent.after(600, _do_reset)
+        tk.Button(f_reset, text="Reset All Settings",
                   font=("Segoe UI", 9), bg="#3a1a1a", fg="#ff6b6b",
                   activebackground="#4a2020", activeforeground="#ff9999",
                   relief="flat", cursor="hand2", padx=12, pady=5,
-                  command=_reset_keybinds).pack(side="left")
+                  command=_reset_all).pack(side="left")
 
     # ── 1-Knob tab ───────────────────────────────────────────────────────────
     def _build_single(self, nb):
         sc = self._make_tab(nb, "1-Knob Mode")
 
-        self._v_sto         = tk.IntVar(value=self.cfg.get("single_timeout", 60))
         self._v_auto_revert = tk.BooleanVar(value=self.cfg.get("single_auto_revert", False))
 
         tk.Label(sc,
@@ -2298,11 +2396,14 @@ class SettingsWin(tk.Toplevel):
                  font=("Segoe UI", 8), fg="#1DB954", bg=BG,
                  wraplength=420, justify="left").pack(padx=16, pady=(0,4), anchor="w")
         tk.Label(sc,
-                 text="Recommended keyboard mapping:\n"
+                 text="Recommended mapping in your keyboard software:\n"
                       "  Knob left → F13 (Vol-)   Knob right → F14 (Vol+)\n"
-                      "  Knob click → F15 (Cycle)   F12 key → F16 (Mute)",
+                      "  Knob click → F15 (Cycle)   F12 key → F16 (Mute)\n\n"
+                      "Can't remap? Enable Hardware Knob in the main window.",
                  font=("Consolas", 8), fg=SUBTEXT, bg=BG,
                  justify="left").pack(padx=16, pady=(0,8), anchor="w")
+        # Default timeout 30s
+        self._v_sto = tk.IntVar(value=self.cfg.get("single_timeout", 30))
 
         self._sep(sc, "Auto-Revert to Default Group")
         self._row(sc, "Enable auto-revert",
@@ -2315,31 +2416,14 @@ class SettingsWin(tk.Toplevel):
         self._row(sc, "Revert after (seconds)",
                   lambda p: tk.Spinbox(p, from_=5, to=600,
                                        textvariable=self._v_sto,
-                                       width=5, font=("Segoe UI", 9),
+                                       width=10, font=("Segoe UI", 9),
                                        bg=PANEL, fg=TEXT,
                                        buttonbackground=BORDER,
                                        highlightthickness=0, relief="flat",
                                        command=self._apply).pack(side="left"))
 
-        self._sep(sc, "Hardware Knob (e.g. AULAF75)")
-        tk.Label(sc,
-                 text="For keyboards with a physical volume knob that can't be remapped.\n"
-                      "Intercepts the system volume keys and redirects them to control\n"
-                      "your active group instead — system volume stays untouched.\n\n"
-                      "The knob always controls whichever group is currently active.\n"
-                      "Use the Cycle Key below to switch between groups.",
-                 font=("Segoe UI", 8), fg=SUBTEXT, bg=BG,
-                 justify="left").pack(padx=16, pady=(4,8), anchor="w")
-
-        self._v_hw_en  = tk.BooleanVar(value=self.cfg.get("hw_knob_enabled", False))
-
-        self._row(sc, "Enable hardware knob intercept",
-                  lambda p: self._chk(p, self._v_hw_en).pack(side="left"))
-
-        tk.Label(sc,
-                 text="Volume keys and Cycle key are set on the main window above the groups.",
-                 font=("Segoe UI", 8), fg=SUBTEXT, bg=BG,
-                 wraplength=420).pack(padx=16, pady=(8,4), anchor="w")
+        # Hardware Knob is controlled from the main window — not duplicated here
+        self._v_hw_en = tk.BooleanVar(value=self.cfg.get("hw_knob_enabled", False))
 
     # ── Mic tab ──────────────────────────────────────────────────────────────
     def _build_mic(self, nb):
@@ -2348,7 +2432,7 @@ class SettingsWin(tk.Toplevel):
         self._v_micen    = tk.BooleanVar(value=self.cfg.get("mic_enabled", True))
         self._v_michk    = tk.StringVar(value=self.cfg.get("mic_hotkey", "f9"))
         self._v_micst    = tk.BooleanVar(value=self.cfg.get("mic_start_muted", False))
-        self._v_micvol   = tk.DoubleVar(value=self.cfg.get("mic_sound_volume", 0.15))
+        self._v_micvol   = tk.IntVar(value=_level_from_vol(self.cfg.get("mic_sound_volume", 0.056)))
         self._v_micsz    = tk.IntVar(value=self.cfg.get("mic_icon_size", 40))
         self._v_mical    = tk.DoubleVar(value=self.cfg.get("mic_icon_alpha", 0.85))
         self._v_micstyle = tk.StringVar(value=self.cfg.get("mic_icon_style", "Circle"))
@@ -2415,37 +2499,10 @@ class SettingsWin(tk.Toplevel):
 
         self._sep(sc, "Sound")
         self._row(sc, "Toggle sound volume",
-                  lambda p: self._sld(p, self._v_micvol, 0.001, 0.3, 0.005).pack(side="left"))
+                  lambda p: self._sld(p, self._v_micvol, 1, 5, 1).pack(side="left"))
 
-        tk.Label(sc, text="Click a sound to preview it — stays selected:",
-                 font=("Segoe UI", 9), fg=TEXT, bg=BG).pack(padx=16, pady=(8, 4), anchor="w")
-
-        # Grid of sound preset buttons
-        sf = tk.Frame(sc, bg=PANEL, padx=6, pady=6)
-        sf.pack(fill="x", padx=16, pady=(0, 10))
+        # Only one preset (Soft Ping) — no preset selector needed
         self._preset_btns = []
-        cur_p = self.cfg.get("mic_sound_preset", 0)
-        self._preview_muted = True  # alternates on each click
-        for i, (name, shape, mute_p, unmute_p) in enumerate(SOUND_PRESETS):
-            row_i = i // 4
-            col_i = i % 4
-            is_sel = (i == cur_p)
-            def _pick(idx=i, sh=shape, mp=mute_p, up=unmute_p):
-                self._v_micpre.set(idx)
-                self._preview_muted = not self._preview_muted
-                fr, dur2, vs = mp if self._preview_muted else up
-                play_sound(fr, dur2, self._v_micvol.get() * vs, sh)
-                self._apply()
-                self._refresh_preset_btns()
-            btn = tk.Button(sf, text=name, font=("Segoe UI", 8),
-                            bg="#1a3a1a" if is_sel else BORDER,
-                            fg="#1DB954" if is_sel else TEXT,
-                            relief="flat", cursor="hand2", padx=6, pady=3,
-                            command=_pick)
-            btn.grid(row=row_i, column=col_i, padx=3, pady=3, sticky="ew")
-            self._preset_btns.append(btn)
-        for col in range(4):
-            sf.columnconfigure(col, weight=1)
 
     def _refresh_preset_btns(self):
         cur = self._v_micpre.get()
@@ -2461,6 +2518,7 @@ class SettingsWin(tk.Toplevel):
     def _apply(self):
         c = self.cfg
         c["start_minimized"]   = self._v_startmin.get()
+
         c["show_overlay"]      = self._v_overlay.get()
         # overlay position is saved directly by drag — preserve it here
         c.setdefault("overlay_x", self.cfg.get("overlay_x", -1))
@@ -2477,7 +2535,7 @@ class SettingsWin(tk.Toplevel):
         c["mic_enabled"]       = self._v_micen.get()
         c["mic_hotkey"]        = self._v_michk.get()
         c["mic_start_muted"]   = self._v_micst.get()
-        c["mic_sound_volume"]  = round(self._v_micvol.get(), 3)
+        c["mic_sound_volume"]  = _vol_from_level(self._v_micvol.get())
         c["mic_icon_size"]     = self._v_micsz.get()
         c["mic_icon_alpha"]    = round(self._v_mical.get(), 2)
         c["mic_icon_style"]    = self._v_micstyle.get()
@@ -2492,6 +2550,231 @@ class SettingsWin(tk.Toplevel):
 # ══════════════════════════════════════════════════════════════════════════════
 # Main UI
 # ══════════════════════════════════════════════════════════════════════════════
+class TutorialOverlay:
+    """
+    First-run tutorial.
+    Drawn directly inside the app window using a Canvas overlay so it
+    always moves with the window. No separate Toplevel — no drift.
+    Blocks all interaction while active.
+    """
+    STEPS = [
+        {
+            "title": "Welcome to KnobMixer!",
+            "body":  "Let's show you around in a few quick steps.\nPress Next to continue.",
+            "target": None,
+        },
+        {
+            "title": "1 — Choose your mode",
+            "body":  ("1-Knob — one knob controls all your groups.\n"
+                      "Multiple Knobs — each group has its own keys.\n\n"
+                      "Can't remap your knob's volume keys?\n"
+                      "Tick Hardware Knob below the mode selector."),
+            "target": "mode_bar",
+        },
+        {
+            "title": "2 — Set your hotkeys",
+            "body":  ("First assign your keys in your keyboard software,\n"
+                      "then assign them here in KnobMixer.\n\n"
+                      "Recommended:\n"
+                      "  Knob left  → F13   Knob right → F14\n"
+                      "  Knob click → F15 (Cycle)\n"
+                      "  F12 key    → F16 (Mute)"),
+            "target": "knob_panel",
+        },
+        {
+            "title": "3 — Add your apps",
+            "body":  ("Each group controls a set of apps.\n"
+                      "Click Edit on a group to add apps.\n\n"
+                      "Groups are controlled in order — the TOP group\n"
+                      "is always the first one your knob controls.\n"
+                      "Drag to reorder them."),
+            "target": "groups",
+        },
+        {
+            "title": "4 — Add more groups",
+            "body":  "Need a group for your game?\nClick + Group at the bottom to add one.",
+            "target": "add_group",
+        },
+    ]
+
+    def __init__(self, root, app):
+        self._root    = root
+        self._app     = app
+        self._step         = 0
+        self._canvas       = None
+        self._panel        = None
+        self._ovr          = None
+        self._info         = None
+        self._border       = None
+        self._ovr_bind_id  = None
+        self._panel_bind_id = None
+        self._show_step()
+
+    def _get_target_widget(self, target):
+        try:
+            if target == "mode_bar":    return self._app._mode_bar
+            if target == "knob_panel":  return self._app._knob_panel
+            if target == "groups":      return self._app._groups_cf
+            if target == "add_group":   return self._app._add_group_btn
+        except: pass
+        return None
+
+    def _show_step(self):
+        self._clear()
+        if self._step >= len(self.STEPS):
+            self._finish()
+            return
+
+        step   = self.STEPS[self._step]
+        target = step.get("target")
+        widget = self._get_target_widget(target) if target else None
+
+        self._root.update_idletasks()
+
+        # ── Transparent click-blocking overlay (tracks window movement) ───────
+        # A Toplevel with WS_EX_TRANSPARENT would pass clicks through but we
+        # need to BLOCK clicks. Use a non-transparent Toplevel that matches the
+        # app window exactly, and re-sync its position on every Configure event.
+        self._ovr = tk.Toplevel(self._root)
+        self._ovr.overrideredirect(True)
+        self._ovr.attributes("-topmost", True)
+        self._ovr.attributes("-alpha", 0.01)  # nearly invisible but click-blocking
+        self._ovr.configure(bg="black")
+
+        def _sync_ovr(e=None):
+            if not (self._ovr and self._ovr.winfo_exists()): return
+            try:
+                rx = self._root.winfo_rootx()
+                ry = self._root.winfo_rooty()
+                rw = self._root.winfo_width()
+                rh = self._root.winfo_height()
+                self._ovr.geometry(f"{rw}x{rh}+{rx}+{ry}")
+            except: pass
+
+        _sync_ovr()
+        # Rebind on every move/resize so overlay always tracks the window
+        self._ovr_bind_id = self._root.bind("<Configure>", _sync_ovr, add="+")
+
+        # ── Green border on highlighted widget ────────────────────────────────
+        if widget:
+            try:
+                widget.config(highlightthickness=3,
+                              highlightbackground="#1DB954",
+                              highlightcolor="#1DB954")
+                self._border = widget
+            except: pass
+
+        # ── Info panel — separate Toplevel, always on top ────────────────────
+        self._panel = tk.Toplevel(self._root)
+        self._panel.overrideredirect(True)
+        self._panel.attributes("-topmost", True)
+        self._panel.configure(bg="#1a1a2e")
+        tk.Frame(self._panel, bg="#1DB954", height=2).pack(fill="x")
+        f = tk.Frame(self._panel, bg="#1a1a2e", padx=18, pady=14)
+        f.pack()
+
+        dot_f = tk.Frame(f, bg="#1a1a2e"); dot_f.pack(anchor="w", pady=(0,6))
+        for i in range(len(self.STEPS)):
+            col = "#1DB954" if i == self._step else "#444"
+            tk.Label(dot_f, text="●", font=("Segoe UI",8),
+                     fg=col, bg="#1a1a2e").pack(side="left", padx=2)
+
+        tk.Label(f, text=step["title"], font=("Segoe UI",11,"bold"),
+                 fg="#1DB954", bg="#1a1a2e").pack(anchor="w")
+        tk.Label(f, text=step["body"], font=("Segoe UI",9),
+                 fg="#c9d1d9", bg="#1a1a2e", justify="left",
+                 wraplength=240).pack(anchor="w", pady=(6,12))
+
+        btn_f = tk.Frame(f, bg="#1a1a2e"); btn_f.pack(anchor="e")
+        if self._step > 0:
+            tk.Button(btn_f, text="Back", font=("Segoe UI",9),
+                      bg="#2a2a3e", fg="#888", relief="flat",
+                      cursor="hand2", padx=12, pady=4,
+                      command=self._prev).pack(side="left", padx=(0,6))
+        is_last = self._step == len(self.STEPS) - 1
+        tk.Button(btn_f,
+                  text="Done" if is_last else "Next →",
+                  font=("Segoe UI",9,"bold"),
+                  bg="#1DB954", fg="white", relief="flat",
+                  cursor="hand2", padx=16, pady=4,
+                  command=self._next).pack(side="left")
+
+        # Position panel BELOW the app window so the blocking overlay
+        # (which covers only the app window area) cannot intercept clicks.
+        # Execution proof: _ovr covers rx..rx+rw, ry..ry+rh
+        # Panel at py = ry+rh+8 is outside that rect — clicks reach _panel directly.
+        self._panel.update_idletasks()
+        pw = self._panel.winfo_reqwidth()
+        ph = self._panel.winfo_reqheight()
+        rx = self._root.winfo_rootx()
+        ry = self._root.winfo_rooty()
+        rw = self._root.winfo_width()
+        rh = self._root.winfo_height()
+        sh = self._root.winfo_screenheight()
+        px = rx + (rw - pw) // 2
+        py = ry + rh + 8   # just below the window — outside _ovr coverage
+        # Clamp: if no room below, place above the window instead
+        if py + ph > sh - 10:
+            py = ry - ph - 8
+        px = max(0, px)
+        py = max(0, py)
+        self._panel.geometry(f"+{px}+{py}")
+
+        def _sync_panel(e=None):
+            if not (self._panel and self._panel.winfo_exists()): return
+            try:
+                rx2 = self._root.winfo_rootx()
+                ry2 = self._root.winfo_rooty()
+                rw2 = self._root.winfo_width()
+                rh2 = self._root.winfo_height()
+                pw2 = self._panel.winfo_width()
+                ph2 = self._panel.winfo_height()
+                sh2 = self._root.winfo_screenheight()
+                py2 = ry2 + rh2 + 8
+                if py2 + ph2 > sh2 - 10:
+                    py2 = ry2 - ph2 - 8
+                self._panel.geometry(
+                    f"+{max(0, rx2+(rw2-pw2)//2)}+{max(0,py2)}")
+            except: pass
+        self._panel_bind_id = self._root.bind("<Configure>", _sync_panel, add="+")
+
+    def _clear(self):
+        # Unbind only our specific Configure handlers using stored bind IDs
+        for id_attr in ("_ovr_bind_id", "_panel_bind_id"):
+            bid = getattr(self, id_attr, None)
+            if bid is not None:
+                try: self._root.unbind("<Configure>", bid)
+                except: pass
+                setattr(self, id_attr, None)
+        # Remove highlight border
+        if getattr(self, "_border", None):
+            try: self._border.config(highlightthickness=0)
+            except: pass
+            self._border = None
+        # Destroy Toplevel windows and inner frames
+        for attr in ("_ovr", "_panel", "_canvas", "_info"):
+            w = getattr(self, attr, None)
+            if w is not None:
+                try:
+                    if w.winfo_exists(): w.destroy()
+                except: pass
+                setattr(self, attr, None)
+
+    def _next(self):
+        self._step += 1
+        self._show_step()
+
+    def _prev(self):
+        self._step = max(0, self._step - 1)
+        self._show_step()
+
+    def _finish(self):
+        self._clear()
+        self._app.cfg["tutorial_seen"] = True
+        save_cfg(self._app.cfg)
+
+
+
 class App:
     def __init__(self):
         self.cfg=load_cfg()
@@ -2502,6 +2785,7 @@ class App:
         self._timeout_job=None
         self._timeout_start=0
         self._group_widgets=[]
+        self._tutorial = None
         
         self._build_win()
         self.overlay=VolumeOverlay(self.root)
@@ -2521,7 +2805,8 @@ class App:
 
         self._refresh_loop()
         self._setup_tray()
-        if self.cfg.get("start_minimized",True):
+        # Never minimize on first launch — tutorial needs the window visible
+        if self.cfg.get("start_minimized",True) and self.cfg.get("tutorial_seen",False):
             self.root.after(200,self._hide)
 
     # ── Window ────────────────────────────────────────────────────────────────
@@ -2533,6 +2818,12 @@ class App:
         self.root.minsize(600,400)
         self.root.protocol("WM_DELETE_WINDOW",self._hide)
         self.root.bind("<FocusOut>", lambda e: self._card_drag_cancel() if hasattr(self,"_card_drag_cancel") else None)
+        # When clicking anywhere that is NOT an Entry, release focus from any
+        # active Entry (removes the blinking cursor). add="+" preserves other bindings.
+        def _maybe_release_focus(e):
+            if not isinstance(e.widget, tk.Entry):
+                self.root.focus_set()
+        self.root.bind("<Button-1>", _maybe_release_focus, add="+")
         w,h=640,720
         sw=self.root.winfo_screenwidth(); sh=self.root.winfo_screenheight()
         h=min(h, sh-80)
@@ -2560,6 +2851,10 @@ class App:
                   activebackground="#111118",activeforeground=TEXT,
                   relief="flat",cursor="hand2",
                   command=self._open_settings).pack(side="right",padx=(4,0))
+        tk.Button(rf,text="?",font=("Segoe UI",11,"bold"),bg="#111118",fg=SUBTEXT,
+                  activebackground="#111118",activeforeground=TEXT,
+                  relief="flat",cursor="hand2",padx=4,
+                  command=self._start_tutorial).pack(side="right",padx=(0,2))
         self._onoff_btn=tk.Button(rf,text="ON",font=("Segoe UI",9,"bold"),
                                   bg="#1a3a1a",fg="#1DB954",activebackground="#2a4a2a",
                                   relief="flat",cursor="hand2",padx=10,pady=4,
@@ -2578,13 +2873,37 @@ class App:
 
         # Mode bar
         mb=tk.Frame(self.root,bg=PANEL,pady=6); mb.pack(fill="x")
+        self._mode_bar = mb  # reference for tutorial
         tk.Label(mb,text="Mode:",font=("Segoe UI",9),fg=SUBTEXT,bg=PANEL).pack(side="left",padx=(14,4))
         self._mode_var=tk.StringVar(value=self.cfg.get("mode","multi"))
-        for val,lbl in [("multi","Multiple Knobs"),("single","1 Knob")]:
+        for val,lbl in [("single","1 Knob"),("multi","Multiple Knobs")]:
             tk.Radiobutton(mb,text=lbl,value=val,variable=self._mode_var,
                            font=("Segoe UI",9),fg=TEXT,bg=PANEL,selectcolor=BORDER,
                            activebackground=PANEL,activeforeground=TEXT,
                            command=self._on_mode).pack(side="left",padx=6)
+
+        # Hardware knob row — sits between mode bar and knob panel
+        self._hw_row = tk.Frame(self.root, bg=PANEL, pady=4)
+        tk.Frame(self._hw_row, bg=BORDER, height=1).pack(fill="x", padx=10, pady=(0,4))
+        hw_inner = tk.Frame(self._hw_row, bg=PANEL)
+        hw_inner.pack(fill="x", padx=14)
+        self._hw_var = tk.BooleanVar(value=self.cfg.get("hw_knob_enabled", False))
+        def _on_hw_toggle():
+            self.cfg["hw_knob_enabled"] = self._hw_var.get()
+            self._autosave()
+            self._rebuild_knob_panel()
+        tk.Checkbutton(hw_inner, text="Hardware Knob",
+                       variable=self._hw_var,
+                       font=("Segoe UI",9), fg=TEXT, bg=PANEL,
+                       selectcolor=BG, activebackground=PANEL,
+                       activeforeground=TEXT,
+                       command=_on_hw_toggle).pack(side="left")
+        tk.Label(hw_inner,
+                 text="Can't change your knob's volume keys? Use this.",
+                 font=("Segoe UI",8), fg=SUBTEXT, bg=PANEL).pack(side="left", padx=(6,0))
+        # Hardware knob only relevant in 1-Knob mode — show/hide with mode
+        if self.cfg.get("mode","single") == "single" or self.cfg.get("hw_knob_enabled",False):
+            self._hw_row.pack(fill="x")
 
         # Single-knob status bar
         self._sb=tk.Frame(self.root,bg="#111118",pady=3)
@@ -2621,28 +2940,30 @@ class App:
             return f
 
         sk = self.cfg.setdefault("single_keys", {"vol_down":"","vol_up":"","mute":""})
+        hw = self.cfg.get("hw_knob_enabled", False)
 
-        # Row 1: label + Vol- Vol+ Mute Cycle
+        # Row 1: keys — show Vol-/Vol+/Mute only when NOT using hw knob
         row1 = tk.Frame(kp, bg=PANEL); row1.pack(fill="x", padx=10, pady=(2,1))
         tk.Label(row1, text="1-Knob:", font=("Segoe UI",8,"bold"), fg=SUBTEXT,
                  bg=PANEL).pack(side="left", padx=(0,8))
 
-        for action, lbl in [("vol_down","Vol-"), ("vol_up","Vol+"), ("mute","Mute")]:
-            def _cb(hk, a=action):
-                self.cfg["single_keys"][a] = hk; self._autosave()
-            def _clr_v(a=action):
-                self.cfg["single_keys"][a] = ""; self._autosave()
-            _make_hk_cell(row1, lbl,
-                          lambda a=action: sk.get(a,""),
-                          lambda hk, a=action: (self.cfg["single_keys"].__setitem__(a, hk), self._autosave()),
-                          lambda a=action: (self.cfg["single_keys"].__setitem__(a,""), self._autosave())
-                          ).pack(side="left", padx=(0,10))
+        if not hw:
+            for action, lbl in [("vol_down","Vol-"), ("vol_up","Vol+"), ("mute","Mute")]:
+                _make_hk_cell(row1, lbl,
+                              lambda a=action: sk.get(a,""),
+                              lambda hk, a=action: (self.cfg["single_keys"].__setitem__(a, hk), self._autosave()),
+                              lambda a=action: (self.cfg["single_keys"].__setitem__(a,""), self._autosave())
+                              ).pack(side="left", padx=(0,10))
 
         def _ck_cb(hk): self.cfg["cycle_key"] = hk; self._autosave()
         def _ck_clr(): self.cfg["cycle_key"] = ""; self._autosave()
         _make_hk_cell(row1, "Cycle",
                       lambda: self.cfg.get("cycle_key",""),
                       _ck_cb, _ck_clr).pack(side="left")
+        if hw:
+            tk.Label(row1,
+                     text="  Vol keys handled by Hardware Knob",
+                     font=("Segoe UI",8), fg=SUBTEXT, bg=PANEL).pack(side="left", padx=(8,0))
         # Knob panel packs after groups frame is created (see below)
         self._knob_panel_pending = self.cfg.get("mode") == "single"
 
@@ -2761,8 +3082,11 @@ class App:
         self._drag_state = {"active": False, "idx": None, "start_y": 0, "ghost": None}
         if hasattr(self, "_master_vol_btn"):
             self._update_master_vol_btn()
-        if hasattr(self, "_master_vol_btn"):
-            self._update_master_vol_btn()
+        # Force canvas to recalculate scrollregion after content changes
+        self.gf.update_idletasks()
+        bbox = self._canvas.bbox("all")
+        if bbox:
+            self._canvas.configure(scrollregion=bbox)
 
     def _card_drag_start(self, event, idx):
         """Begin drag — record starting position and which group."""
@@ -2841,7 +3165,9 @@ class App:
         ne=tk.Entry(r1,textvariable=nv,font=("Segoe UI",10,"bold"),
                     bg=PANEL,fg=TEXT,insertbackground=TEXT,relief="flat",bd=0,width=13)
         ne.pack(side="left",padx=6)
-        ne.bind("<KeyRelease>",lambda e,g=group,v=nv: self._on_name(g,v))
+        ne.bind("<KeyRelease>", lambda e,g=group,v=nv: self._on_name(g,v))
+        ne.bind("<Return>",    lambda e: self.root.focus_set())
+        ne.bind("<Escape>",    lambda e: self.root.focus_set())
         if group.get("master_volume"):
             tk.Label(r1,text="🔊 PC",font=("Segoe UI",7),fg="#00BCD4",
                      bg=PANEL).pack(side="left")
@@ -3033,6 +3359,47 @@ class App:
             self.cfg["groups"].pop(idx); self._autosave(); self._redraw()
 
     # ── Mode ──────────────────────────────────────────────────────────────────
+    def _rebuild_knob_panel(self):
+        """Rebuild the 1-knob hotkey panel (e.g. when hw_knob toggled)."""
+        for w in self._knob_panel.winfo_children(): w.destroy()
+        # Re-run the knob panel build logic
+        kp = self._knob_panel
+        def _make_hk_cell(parent, label, get_val, set_val, clear_val):
+            f = tk.Frame(parent, bg=PANEL)
+            tk.Label(f, text=label, font=("Segoe UI",8), fg=SUBTEXT, bg=PANEL).pack(anchor="w")
+            rf = tk.Frame(f, bg=PANEL); rf.pack(anchor="w")
+            btn = make_hotkey_btn(rf, get_val(), set_val)
+            btn.pack(side="left")
+            def _clr(b=btn):
+                cap = getattr(b, "_capture", None)
+                if cap and cap._active: cap._finish(None)
+                else: clear_val(); b.config(text="—")
+            tk.Button(rf, text="✕", font=("Segoe UI",7), bg=PANEL, fg="#555",
+                      activebackground=BORDER, activeforeground="#ff6b6b",
+                      relief="flat", cursor="hand2", padx=2, pady=0,
+                      command=_clr).pack(side="left", padx=(1,0))
+            return f
+        sk = self.cfg.setdefault("single_keys", {"vol_down":"","vol_up":"","mute":""})
+        hw = self.cfg.get("hw_knob_enabled", False)
+        row1 = tk.Frame(kp, bg=PANEL); row1.pack(fill="x", padx=10, pady=(2,1))
+        tk.Label(row1, text="1-Knob:", font=("Segoe UI",8,"bold"), fg=SUBTEXT,
+                 bg=PANEL).pack(side="left", padx=(0,8))
+        if not hw:
+            for action, lbl in [("vol_down","Vol-"), ("vol_up","Vol+"), ("mute","Mute")]:
+                _make_hk_cell(row1, lbl,
+                              lambda a=action: sk.get(a,""),
+                              lambda hk, a=action: (self.cfg["single_keys"].__setitem__(a, hk), self._autosave()),
+                              lambda a=action: (self.cfg["single_keys"].__setitem__(a,""), self._autosave())
+                              ).pack(side="left", padx=(0,10))
+        def _ck_cb(hk): self.cfg["cycle_key"] = hk; self._autosave()
+        def _ck_clr(): self.cfg["cycle_key"] = ""; self._autosave()
+        _make_hk_cell(row1, "Cycle",
+                      lambda: self.cfg.get("cycle_key",""),
+                      _ck_cb, _ck_clr).pack(side="left")
+        if hw:
+            tk.Label(row1, text="  Vol keys handled by Hardware Knob",
+                     font=("Segoe UI",8), fg=SUBTEXT, bg=PANEL).pack(side="left", padx=(8,0))
+
     def _on_mode(self):
         self.cfg["mode"]=self._mode_var.get()
         self._init_single()
@@ -3040,11 +3407,13 @@ class App:
         self._redraw()
         if self.cfg["mode"]=="single":
             self._sb.pack(fill="x")
-            # Pack knob panel BEFORE the groups canvas frame to ensure it's above
             self._knob_panel.pack(fill="x", before=self._groups_cf)
+            self._hw_row.pack(fill="x", before=self._groups_cf)
         else:
             self._sb.pack_forget()
             self._knob_panel.pack_forget()
+            if not self.cfg.get("hw_knob_enabled", False):
+                self._hw_row.pack_forget()
         self._autosave()
 
     def _init_single(self):
@@ -3066,11 +3435,13 @@ class App:
     def _on_switch(self,group):
         self._active_grp=group; self.cfg["_active_group_ref"]=group
         self.root.after(0,self._update_active_lbl)
-        # Show overlay with group name when switching
-        self.root.after(0,lambda g=group:
-            self.overlay.show(g["name"],g.get("color","#888"),
-                              g["volume"],g.get("muted",False),
-                              self.cfg.get("overlay_size",1.0)))
+        # Only show overlay when triggered by user action (hotkey),
+        # not during startup init or programmatic switches
+        if getattr(self, "_hotkeys_active", False):
+            self.root.after(0,lambda g=group:
+                self.overlay.show(g["name"],g.get("color","#888"),
+                                  g["volume"],g.get("muted",False),
+                                  self.cfg.get("overlay_size",1.0)))
         if self.cfg.get("mode","multi")=="single":
             if self._timeout_job: self.root.after_cancel(self._timeout_job)
             self._timeout_job = None
@@ -3091,7 +3462,7 @@ class App:
 
     def _tick(self):
         if self._timeout_job is None: return
-        remain=max(0,self.cfg.get("single_timeout",60)-(time.time()-self._timeout_start))
+        remain=max(0,self.cfg.get("single_timeout",30)-(time.time()-self._timeout_start))
         self._timeout_lbl.config(text=f"Reverts in {int(remain)}s")
         if remain>0: self.root.after(1000,self._tick)
 
@@ -3320,9 +3691,15 @@ class App:
         if self._settings_open():
             self._settings_win.lift()
             return
-        self._settings_win = SettingsWin(self.root, self.cfg, self._on_settings_change)
+        self._settings_win = SettingsWin(self.root, self.cfg, self._on_settings_change,
+                                          quit_fn=self._quit)
 
     def _on_settings_change(self):
+        # Force-hide volume popup — settings changes can trigger hk.reload
+        # which fires _on_vol callbacks and resets the hide timer
+        self.overlay.set_enabled(False)
+        self.root.after(100, lambda: self.overlay.set_enabled(
+            self.cfg.get("show_overlay", True)))
         self.hk.reload(self.cfg,self._on_vol,self._on_switch)
         self._reg_mic_hk()
         if self.cfg.get("mic_enabled",True):
@@ -3346,6 +3723,11 @@ class App:
         threading.Thread(target=self.tray.run,daemon=True).start()
 
     def _hide(self):
+        # Clear tutorial if active — it lives inside root so must be cleaned
+        if getattr(self, "_tutorial", None):
+            try: self._tutorial._finish()
+            except: pass
+            self._tutorial = None
         if self._settings_open():
             self._settings_win.destroy()
         self.root.withdraw()
@@ -3370,8 +3752,19 @@ class App:
 
     def run(self):
         self.root.after(3000, self._hook_health_check)
-        self.root.after(2000, self._sync_mute_states)  # wait for audio sessions to init
+        self.root.after(2000, self._sync_mute_states)
+        # Mark hotkeys as active after startup — prevents spurious overlay shows
+        self.root.after(1000, lambda: setattr(self, "_hotkeys_active", True))
+        if not self.cfg.get("tutorial_seen", False):
+            self.root.after(800, self._start_tutorial)
         self.root.mainloop()
+
+    def _start_tutorial(self):
+        # Close settings if open — avoids z-order conflicts
+        if self._settings_open():
+            self._settings_win.destroy()
+            self._settings_win = None
+        self._tutorial = TutorialOverlay(self.root, self)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -3566,12 +3959,31 @@ class AppsDialog(tk.Toplevel):
             if not already_added:
                 def _add(n=a, b=btn, other=in_other):
                     if other:
-                        import tkinter.messagebox as _mb
-                        if not _mb.askyesno("Already in another group",
-                            f"'{n}' is already in another group.\n"
-                            "Adding it here may cause conflicts.\nContinue?",
-                            parent=self):
-                            return
+                        # Custom dialog with proper X button (askyesno blocks X)
+                        result = [False]
+                        dlg = tk.Toplevel(self)
+                        dlg.title("Already in another group")
+                        dlg.configure(bg=BG)
+                        dlg.resizable(False, False)
+                        dlg.grab_set()
+                        dlg.protocol("WM_DELETE_WINDOW", dlg.destroy)
+                        tk.Label(dlg, text=f"'{n}' is already in another group.\n"
+                                            "Adding it here may cause conflicts.",
+                                 font=("Segoe UI",9), fg=TEXT, bg=BG,
+                                 padx=20, pady=12, justify="left").pack()
+                        bf = tk.Frame(dlg, bg=BG, pady=8); bf.pack()
+                        def _yes():
+                            result[0] = True; dlg.destroy()
+                        tk.Button(bf, text="Add anyway", font=("Segoe UI",9),
+                                  bg="#3a1a1a", fg="#ff6b6b", relief="flat",
+                                  cursor="hand2", padx=10, pady=4,
+                                  command=_yes).pack(side="left", padx=6)
+                        tk.Button(bf, text="Cancel", font=("Segoe UI",9),
+                                  bg=BORDER, fg=TEXT, relief="flat",
+                                  cursor="hand2", padx=10, pady=4,
+                                  command=dlg.destroy).pack(side="left", padx=6)
+                        dlg.wait_window()
+                        if not result[0]: return
                     self._apps.append(n)
                     self._refresh_added()
                     self._refresh_open()
