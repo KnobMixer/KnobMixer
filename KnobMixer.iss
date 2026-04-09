@@ -1,6 +1,6 @@
 ; KnobMixer Inno Setup Script
 #define MyAppName      "KnobMixer"
-#define MyAppVersion   "2.7.2"
+#define MyAppVersion   "2.7.3"
 #define MyAppPublisher "KnobMixer"
 #define MyAppURL       "https://github.com/KnobMixer/KnobMixer"
 #define MyAppExeName   "KnobMixer.exe"
@@ -25,10 +25,11 @@ PrivilegesRequired=admin
 UninstallDisplayIcon={app}\{#MyAppExeName}
 UninstallDisplayName=KnobMixer
 
-; Automatically close the running app before install/uninstall
-CloseApplications=yes
-CloseApplicationsFilter=KnobMixer.exe
-RestartApplications=no
+; Do NOT use CloseApplications=yes — KnobMixer intercepts WM_CLOSE to minimize
+; to tray instead of closing, so the graceful close silently fails and the
+; installer errors out. We kill the process explicitly in [Code] BeforeInstall
+; which runs before any file operations begin.
+CloseApplications=no
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
@@ -36,7 +37,6 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
 Name: "startupicon"; Description: "Start KnobMixer when Windows starts"; GroupDescription: "Startup"
-Name: "deleteconfig"; Description: "Remove my settings and data on uninstall"; GroupDescription: "Uninstall options"; Flags: unchecked
 
 [Files]
 Source: "dist\KnobMixer\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
@@ -48,47 +48,54 @@ Name: "{group}\Uninstall KnobMixer"; FileName: "{uninstallexe}"
 Name: "{autodesktop}\{#MyAppName}";  FileName: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
 [Run]
-; Close any running instance before files are copied
-Filename: "taskkill.exe"; Parameters: "/f /im KnobMixer.exe"; Flags: runhidden; Check: IsAppRunning
-
 ; Launch after install
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
 
 [UninstallRun]
-; Kill the app first so files can be deleted cleanly
 Filename: "taskkill.exe"; Parameters: "/f /im KnobMixer.exe"; Flags: runhidden; RunOnceId: "KillApp"
-
-; Remove from startup registry
 Filename: "reg.exe"; Parameters: "delete ""HKCU\Software\Microsoft\Windows\CurrentVersion\Run"" /v KnobMixer /f"; Flags: runhidden; RunOnceId: "RemoveStartup"
 
 [UninstallDelete]
-; Always remove these on uninstall
 Type: filesandordirs; Name: "{app}"
 
 [Registry]
-; Startup with Windows (if task selected during install)
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; \
   ValueType: string; ValueName: "KnobMixer"; \
   ValueData: """{app}\{#MyAppExeName}"""; \
   Tasks: startupicon; Flags: uninsdeletevalue
 
 [Code]
-function IsAppRunning: Boolean;
+// Kill KnobMixer BEFORE any file operations begin.
+// This is the correct place — CloseApplications=yes sends WM_CLOSE
+// which KnobMixer intercepts to minimize rather than close.
+// BeforeInstall on the first file entry runs before files are touched.
+procedure KillKnobMixer();
 var
   ResultCode: Integer;
 begin
-  Exec('tasklist.exe', '/fi "imagename eq KnobMixer.exe" /fo csv /nh', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-  Result := (ResultCode = 0);
+  // Kill gracefully first, then force if needed
+  Exec('taskkill.exe', '/im KnobMixer.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Sleep(800);
+  // Force kill in case graceful didn't work
+  Exec('taskkill.exe', '/f /im KnobMixer.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Sleep(400);
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssInstall then
+    KillKnobMixer();
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
   AppDataPath: String;
 begin
+  if CurUninstallStep = usUninstall then
+    KillKnobMixer();
+
   if CurUninstallStep = usPostUninstall then
   begin
-    // Only delete AppData config if user ticked the option during install
-    // (We store this choice in registry during install)
     AppDataPath := ExpandConstant('{userappdata}\KnobMixer');
     if DirExists(AppDataPath) then
     begin
