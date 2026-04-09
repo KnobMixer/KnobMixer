@@ -1,5 +1,5 @@
 """
-KnobMixer v2.7.2
+KnobMixer v2.7.3
 Free per-app volume control for keyboard knobs and hotkeys.
 https://github.com/KnobMixer/KnobMixer
 """
@@ -316,7 +316,7 @@ _HOOK = GlobalHookManager()
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 APP_NAME    = "KnobMixer"
-APP_VER     = "2.7.2"
+APP_VER     = "2.7.3"
 APPDATA_DIR = Path(os.getenv("APPDATA",".")) / APP_NAME
 APPDATA_DIR.mkdir(parents=True, exist_ok=True)
 CONFIG_FILE = APPDATA_DIR / "config.json"
@@ -1453,10 +1453,12 @@ class VolumeOverlay:
         self._root=root; self._win=None; self._job=None
         self._cfg=None   # set by App after creation
         self._drag=None  # drag start (x,y,wx,wy)
+        self._lbl_name=None
+        self._lbl_vol=None
+        self._bar_bg=None
+        self._bar_fg=None
 
     def _force_topmost(self):
-        """Force window above fullscreen games. HWND_TOPMOST + NOACTIVATE.
-        Never touch WS_EX_LAYERED — tkinter owns it for -alpha → black square."""
         try:
             HWND_TOPMOST     = -1
             SWP_NOMOVE       = 0x0002
@@ -1484,52 +1486,70 @@ class VolumeOverlay:
             self._win.attributes("-topmost", True)
             self._win.attributes("-alpha", 0.92)
             self._win.configure(bg="#12121e")
-            # Apply Win32 flags so it shows over fullscreen games
+            
+            pad  = max(8, int(16*scale))
+            self._frame = tk.Frame(self._win, bg="#12121e", padx=pad, pady=max(8,int(10*scale)))
+            self._frame.pack()
+            
+            nsz  = max(8, int(9*scale))
+            self._lbl_name = tk.Label(self._frame, font=("Segoe UI", nsz, "bold"), bg="#12121e")
+            self._lbl_name.pack()
+            
+            fsz  = max(10, int(28*scale))
+            self._lbl_vol = tk.Label(self._frame, font=("Segoe UI", fsz, "bold"), bg="#12121e")
+            self._lbl_vol.pack()
+            
+            self._bw = max(60, int(140*scale))
+            self._bar_bg = tk.Frame(self._frame, bg="#2a2a3e", height=max(3,int(4*scale)), width=self._bw)
+            self._bar_bg.pack(pady=(3,0))
+            self._bar_bg.pack_propagate(False)
+            
+            self._bar_fg = tk.Frame(self._bar_bg, height=max(3,int(4*scale)))
+            self._bar_fg.place(x=0, y=0)
+            
             self._win.after(10, self._force_topmost)
-        for w in self._win.winfo_children(): w.destroy()
+            
+            self._win.bind("<ButtonPress-1>",   self._drag_start)
+            self._win.bind("<B1-Motion>",       self._drag_move)
+            self._win.bind("<ButtonRelease-1>", self._drag_end)
+
         text = "MUTED" if muted else f"{int(volume)}%"
         fg   = "#ff6b6b" if muted else color
-        pad  = max(8, int(16*scale))
-        fsz  = max(10, int(28*scale))
-        nsz  = max(8, int(9*scale))
-        bw   = max(60, int(140*scale))
-        f=tk.Frame(self._win,bg="#12121e",padx=pad,pady=max(8,int(10*scale))); f.pack()
-        tk.Label(f,text=name,font=("Segoe UI",nsz,"bold"),fg=color,bg="#12121e").pack()
-        tk.Label(f,text=text,font=("Segoe UI",fsz,"bold"),fg=fg,bg="#12121e").pack()
-        if not muted:
-            bg2=tk.Frame(f,bg="#2a2a3e",height=max(3,int(4*scale)),width=bw)
-            bg2.pack(pady=(3,0)); bg2.pack_propagate(False)
-            fw=max(2,int(bw*volume/100))
-            tk.Frame(bg2,bg=fg,height=max(3,int(4*scale)),width=fw).place(x=0,y=0)
+        
+        self._lbl_name.config(text=name, fg=color)
+        self._lbl_vol.config(text=text, fg=fg)
+        
+        if muted:
+            self._bar_bg.pack_forget()
+        else:
+            self._bar_bg.pack(pady=(3,0))
+            fw = max(2, int(self._bw * volume / 100))
+            self._bar_fg.config(bg=fg, width=fw)
+
         self._win.update_idletasks()
         ww=self._win.winfo_width(); wh=self._win.winfo_height()
         ox = (self._cfg or {}).get("overlay_x", -1)
         oy = (self._cfg or {}).get("overlay_y", -1)
+        
         if ox < 0 or oy < 0:
-            # Default: bottom-right of primary monitor
             sw=self._win.winfo_screenwidth(); sh=self._win.winfo_screenheight()
             ox = sw - ww - 20
             oy = sh - wh - 60
-        # Don't clamp — allow any screen position including second monitors.
-        # Only clamp if clearly invalid (negative or absurdly large).
+        
         if ox < -3840: ox = 0
         if oy < -2160: oy = 0
+        
         self._win.geometry(f"+{ox}+{oy}")
-        self._win.deiconify()
-        # Bind drag on first show
-        if not getattr(self, "_drag_bound", False):
-            self._drag_bound = True
-            self._win.bind("<ButtonPress-1>",   self._drag_start)
-            self._win.bind("<B1-Motion>",       self._drag_move)
-            self._win.bind("<ButtonRelease-1>", self._drag_end)
-        # Re-assert topmost on every show so it stays above the game
-        self._win.after(10, self._force_topmost)
+        
+        if self._win.state() != "normal":
+            self._win.deiconify()
+            self._win.after(10, self._force_topmost)
+
         if self._job: self._root.after_cancel(self._job)
         self._job=self._root.after(2000, self._hide)
 
     def _drag_start(self, e):
-        self._drag = (e.x_root, e.y_root,
-                      self._win.winfo_x(), self._win.winfo_y())
+        self._drag = (e.x_root, e.y_root, self._win.winfo_x(), self._win.winfo_y())
         if self._job: self._root.after_cancel(self._job); self._job=None
 
     def _drag_move(self, e):
@@ -1541,20 +1561,16 @@ class VolumeOverlay:
 
     def _drag_end(self, e):
         if not self._drag: return
-        nx = self._win.winfo_x()
-        ny = self._win.winfo_y()
+        nx, ny = self._win.winfo_x(), self._win.winfo_y()
         self._drag = None
-        # Save position to config
         if self._cfg is not None:
-            self._cfg["overlay_x"] = nx
-            self._cfg["overlay_y"] = ny
-        # Re-show timer
+            self._cfg["overlay_x"], self._cfg["overlay_y"] = nx, ny
         self._job = self._root.after(2000, self._hide)
 
     def _hide(self):
         if self._win and self._win.winfo_exists(): self._win.withdraw()
 
-    def set_enabled(self,v):
+    def set_enabled(self, v):
         if not v: self._hide()
 
 # ── Mic overlay ───────────────────────────────────────────────────────────────
