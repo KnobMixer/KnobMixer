@@ -1,5 +1,5 @@
 """
-KnobMixer v2.7.3
+KnobMixer v2.7.4
 Free per-app volume control for keyboard knobs and hotkeys.
 https://github.com/KnobMixer/KnobMixer
 """
@@ -316,7 +316,7 @@ _HOOK = GlobalHookManager()
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 APP_NAME    = "KnobMixer"
-APP_VER     = "2.7.3"
+APP_VER     = "2.7.4"
 APPDATA_DIR = Path(os.getenv("APPDATA",".")) / APP_NAME
 APPDATA_DIR.mkdir(parents=True, exist_ok=True)
 CONFIG_FILE = APPDATA_DIR / "config.json"
@@ -359,6 +359,7 @@ DEFAULT_CFG = {
     "tutorial_seen": False,
     "analytics_enabled": True,
     "overlay_size": 0.7,
+    "overlay_position": "bottom-right",
     "overlay_x": -1,
     "overlay_y": -1,
     "slowdown_enabled": True,
@@ -379,6 +380,7 @@ DEFAULT_CFG = {
     "mic_sound_volume": 0.056,
     "mic_sound_preset": 0,
     "mic_icon_x": -1,
+    "mic_position": "bottom-right",
     "mic_icon_y": -1,
     "mic_icon_size": 40,
     "mic_icon_alpha": 0.85,
@@ -427,13 +429,13 @@ def load_cfg():
                     if g["keys"].get(a,"").lower().strip() in _BAD_HOTKEYS:
                         print(f"[Config] Cleared bad hotkey in {g.get('name','')} {a}")
                         g["keys"][a] = ""
-            for k,v in [("overlay_size",0.7),("overlay_x",-1),("overlay_y",-1),("slowdown_enabled",True),
+            for k,v in [("overlay_size",0.7),("overlay_position","bottom-right"),("overlay_x",-1),("overlay_y",-1),("slowdown_enabled",True),
                         ("slowdown_threshold",10),("slowdown_step",0.5),
                         ("single_default_group",0),("single_timeout",30),("single_auto_revert",False),("hw_knob_enabled",False),("hw_knob_group",0),("cycle_key",""),
                         ("single_keys",{"vol_down":"","vol_up":"","mute":""}),
                         ("mic_enabled",True),("mic_device",""),("mic_hotkey","f9"),
                         ("mic_start_muted",False),("mic_sound_volume",0.056),
-                        ("mic_sound_preset",0),("mic_icon_x",-1),("mic_icon_y",-1),
+                        ("mic_sound_preset",0),("mic_position","bottom-right"),("mic_icon_x",-1),("mic_icon_y",-1),
                         ("mic_icon_size",40),("mic_icon_alpha",0.85),
                         ("mic_icon_style","circle"),("mode","multi"),
                         ("start_minimized",True),("show_overlay",True),("tutorial_seen",False),("analytics_enabled",True)]:
@@ -1459,6 +1461,30 @@ def draw_mic_icon(style, muted, size):
     return img
 
 # ── Volume overlay ────────────────────────────────────────────────────────────
+# Position preset constants
+POSITION_PRESETS = ["top-left", "top-right", "bottom-left", "bottom-right", "center", "custom"]
+POSITION_MARGIN  = 20   # pixels from screen edge
+MIC_VOL_GAP      = 16   # gap between mic icon and vol popup when in same corner
+
+def _calc_preset_pos(position, win_w, win_h, screen_w, screen_h,
+                     margin=POSITION_MARGIN, offset_y=0):
+    """Calculate (x, y) for a named position preset.
+    offset_y: shift y upward by this many pixels (used to stack mic above vol popup)."""
+    m = margin
+    if position == "top-left":
+        return (m, m + offset_y)
+    elif position == "top-right":
+        return (screen_w - win_w - m, m + offset_y)
+    elif position == "bottom-left":
+        return (m, screen_h - win_h - m - offset_y)
+    elif position == "bottom-right":
+        return (screen_w - win_w - m, screen_h - win_h - m - offset_y)
+    elif position == "center":
+        return (screen_w // 2 - win_w // 2, screen_h // 2 - win_h // 2 - offset_y)
+    else:  # custom — caller uses saved x/y
+        return None
+
+
 class VolumeOverlay:
     def __init__(self, root):
         self._root  = root
@@ -1574,15 +1600,21 @@ class VolumeOverlay:
             self._win.update_idletasks()
             ww = self._win.winfo_reqwidth()
             wh = self._win.winfo_reqheight()
-            ox = (self._cfg or {}).get("overlay_x", -1)
-            oy = (self._cfg or {}).get("overlay_y", -1)
-            if ox < 0 or oy < 0:
-                sw = self._win.winfo_screenwidth()
-                sh = self._win.winfo_screenheight()
-                ox = sw - ww - 20
-                oy = sh - wh - 60
-            if ox < -3840: ox = 0
-            if oy < -2160: oy = 0
+            sw = self._win.winfo_screenwidth()
+            sh = self._win.winfo_screenheight()
+            cfg = self._cfg or {}
+            pos = cfg.get("overlay_position", "bottom-right")
+            if pos != "custom":
+                xy = _calc_preset_pos(pos, ww, wh, sw, sh)
+                ox, oy = xy if xy else (sw - ww - POSITION_MARGIN, sh - wh - POSITION_MARGIN)
+            else:
+                ox = cfg.get("overlay_x", -1)
+                oy = cfg.get("overlay_y", -1)
+                if ox < 0 or oy < 0:
+                    ox = sw - ww - POSITION_MARGIN
+                    oy = sh - wh - POSITION_MARGIN
+            # Sanity clamp for multi-monitor
+            ox = max(-3840, ox); oy = max(-2160, oy)
             self._win.geometry(f"+{ox}+{oy}")
 
         self._win.deiconify()
@@ -1607,11 +1639,10 @@ class VolumeOverlay:
         nx = self._win.winfo_x()
         ny = self._win.winfo_y()
         self._drag = None
-        # Save position to config
         if self._cfg is not None:
-            self._cfg["overlay_x"] = nx
-            self._cfg["overlay_y"] = ny
-        # Re-show timer
+            self._cfg["overlay_x"]       = nx
+            self._cfg["overlay_y"]       = ny
+            self._cfg["overlay_position"] = "custom"  # user dragged — mark as custom
         self._job = self._root.after(2000, self._hide)
 
     def _hide(self):
@@ -1647,10 +1678,25 @@ class MicOverlay:
         self._canvas.pack()
         self._render()
 
-        x = self._cfg.get("mic_icon_x",-1)
-        y = self._cfg.get("mic_icon_y",-1)
-        if x<0 or y<0:
-            sw=self._win.winfo_screenwidth(); x=sw-sz-24; y=120
+        sw = self._win.winfo_screenwidth()
+        sh = self._win.winfo_screenheight()
+        pos = self._cfg.get("mic_position", "bottom-right")
+        if pos != "custom":
+            # Offset mic upward so it doesn't overlap the vol popup.
+            # Vol popup is approx 80px tall at default scale.
+            # Offset = vol_popup_height_estimate + gap
+            vol_h_est = max(60, int(80 * self._cfg.get("overlay_size", 0.7)))
+            offset = vol_h_est + MIC_VOL_GAP
+            xy = _calc_preset_pos(pos, sz, sz, sw, sh, offset_y=offset)
+            x, y = xy if xy else (sw - sz - POSITION_MARGIN,
+                                   sh - sz - POSITION_MARGIN - offset)
+        else:
+            x = self._cfg.get("mic_icon_x", -1)
+            y = self._cfg.get("mic_icon_y", -1)
+            if x < 0 or y < 0:
+                vol_h_est = max(60, int(80 * self._cfg.get("overlay_size", 0.7)))
+                x = sw - sz - POSITION_MARGIN
+                y = sh - sz - POSITION_MARGIN - vol_h_est - MIC_VOL_GAP
         self._win.geometry(f"+{x}+{y}")
 
         self._canvas.bind("<ButtonPress-1>",   self._ds)
@@ -1710,8 +1756,9 @@ class MicOverlay:
             self._win.geometry(f"+{e.x_root-self._drag[0]}+{e.y_root-self._drag[1]}")
     def _de(self,e):
         if self._drag:
-            self._cfg["mic_icon_x"]=self._win.winfo_x()
-            self._cfg["mic_icon_y"]=self._win.winfo_y()
+            self._cfg["mic_icon_x"]  = self._win.winfo_x()
+            self._cfg["mic_icon_y"]  = self._win.winfo_y()
+            self._cfg["mic_position"] = "custom"  # user dragged — mark as custom
             save_cfg(self._cfg)
         self._drag=None
 
@@ -1918,12 +1965,13 @@ class HotkeyEngine:
         _HOOK.clear()
 
 # ── Tray icon ─────────────────────────────────────────────────────────────────
-def make_tray_img(groups, enabled=True, mic_muted=None):
+def make_tray_img(groups, enabled=True, mic_muted=None, update_available=False):
     """Ghost tray icon.
     enabled=False → grey ghost (app disabled)
     mic_muted=True → red ghost (mic muted)
     mic_muted=False → green ghost (mic live)
     mic_muted=None → default green (mic not in use)
+    update_available=True → orange dot badge at top-right
     """
     sz  = 64
     img = Image.new("RGBA",(sz,sz),(0,0,0,0))
@@ -1931,11 +1979,11 @@ def make_tray_img(groups, enabled=True, mic_muted=None):
     if not enabled:
         col = "#444444"
     elif mic_muted is True:
-        col = "#e74c3c"   # red = mic muted
+        col = "#e74c3c"
     elif mic_muted is False:
-        col = "#1DB954"   # green = mic live
+        col = "#1DB954"
     else:
-        col = "#1DB954"   # default green
+        col = "#1DB954"
     m  = 4; cx = sz//2
     d.ellipse([m, m, sz-m, sz//2+m], fill=col)
     d.rectangle([m, sz//3, sz-m, sz-m], fill=col)
@@ -1948,18 +1996,25 @@ def make_tray_img(groups, enabled=True, mic_muted=None):
     d.ellipse([cx+sz//5-er, sz//4, cx+sz//5+er, sz//4+er*2], fill="white")
     if not enabled:
         d.line([(m,m),(sz-m,sz-m)], fill="#ff4444", width=5)
+    if update_available:
+        # Orange dot badge at top-right corner
+        br = 10  # badge radius
+        bx = sz - br - 2
+        by = br + 2
+        d.ellipse([bx-br, by-br, bx+br, by+br], fill="#FF6B2B")
     return img
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Settings Window
 # ══════════════════════════════════════════════════════════════════════════════
 class SettingsWin(tk.Toplevel):
-    def __init__(self, parent, cfg, on_change, quit_fn=None):
+    def __init__(self, parent, cfg, on_change, quit_fn=None, app_ref=None):
         super().__init__(parent)
         self.cfg = cfg
         self.on_change = on_change
         self._quit_fn = quit_fn or (lambda: None)
-        self._parent = parent  # App root — used for scheduling after() on reset
+        self._parent = parent
+        self._app_ref = app_ref  # App instance — for mic overlay rebuild
         self.title("Settings — KnobMixer")
         self.configure(bg=BG)
         self.geometry("540x580")
@@ -2230,7 +2285,26 @@ class SettingsWin(tk.Toplevel):
                   lambda p: self._chk(p, self._v_overlay).pack(side="left"))
         self._row(sc, "Popup size",
                   lambda p: self._sld(p, self._v_ovsize, 0.5, 2.0, 0.1).pack(side="left"))
-        tk.Label(sc, text="Drag the popup to reposition it. Use button below to reset to default.",
+        # Position preset selector
+        self._v_ovpos = tk.StringVar(value=self.cfg.get("overlay_position", "bottom-right"))
+        def _on_ovpos(*_):
+            pos = self._v_ovpos.get()
+            self.cfg["overlay_position"] = pos
+            if pos != "custom":
+                # Reset saved coords so preset is applied on next show
+                self.cfg["overlay_x"] = -1
+                self.cfg["overlay_y"] = -1
+            self._apply()
+        f_pos = tk.Frame(sc, bg=BG); f_pos.pack(fill="x", padx=16, pady=4)
+        tk.Label(f_pos, text="Popup position", font=("Segoe UI",9),
+                 fg=TEXT, bg=BG, width=28, anchor="w").pack(side="left")
+        pos_cb = ttk.Combobox(f_pos, textvariable=self._v_ovpos,
+                              values=["top-left","top-right","bottom-left",
+                                      "bottom-right","center","custom"],
+                              state="readonly", width=14, font=("Segoe UI",9))
+        pos_cb.pack(side="left")
+        pos_cb.bind("<<ComboboxSelected>>", _on_ovpos)
+        tk.Label(sc, text="Drag the popup to move it. Position changes to Custom automatically.",
                  font=("Segoe UI", 8), fg=SUBTEXT, bg=BG,
                  wraplength=420).pack(padx=16, anchor="w")
         def _reset_popup_pos():
@@ -2280,56 +2354,89 @@ class SettingsWin(tk.Toplevel):
                       relief="flat", cursor="hand2", padx=8, pady=3,
                       command=lambda: webbrowser.open(
                           f"https://github.com/{GITHUB_REPO}")).pack(side="left", padx=(0,6))
-        def _mode_label():
-            return "1-Knob" if self.cfg.get("mode") == "single" else "Multiple Knobs"
-
         def _open_bug_report():
-            import platform, urllib.parse
-            # Read crash log if it exists
-            crash_log = APPDATA_DIR / "crash.log"
-            crash_text = ""
-            try:
-                if crash_log.exists():
-                    # Last 3000 chars of crash log — most recent entries
-                    raw = crash_log.read_text(encoding="utf-8", errors="replace")
-                    crash_text = raw[-3000:] if len(raw) > 3000 else raw
-            except: pass
+            """In-app bug report dialog — submits to Cloudflare, no GitHub needed."""
+            import platform
+            dlg = tk.Toplevel(self)
+            dlg.title("Report a Bug")
+            dlg.configure(bg=BG)
+            dlg.resizable(False, False)
+            dlg.grab_set()
+            dlg.protocol("WM_DELETE_WINDOW", dlg.destroy)
 
-            debug = (
-                f"**KnobMixer version:** v{APP_VER}\n"
-                f"**Windows:** {platform.version()}\n"
-                f"**Mode:** {_mode_label()}\n"
-                f"**Groups:** {len(self.cfg.get('groups',[]))}\n"
-                f"**Mic enabled:** {self.cfg.get('mic_enabled',False)}\n"
-                f"**HW knob:** {self.cfg.get('hw_knob_enabled',False)}\n\n"
-                f"**Describe the bug:**\n\n"
-                f"**Steps to reproduce:**\n1. \n2. \n3. \n\n"
-                f"**Expected behavior:**\n\n"
-                f"**What actually happened:**\n\n"
-            )
-            if crash_text:
-                debug += f"**Crash log (last entries):**\n```\n{crash_text}\n```\n"
-            else:
-                debug += "**Crash log:** No crashes recorded.\n"
+            tk.Label(dlg, text="Describe the issue:",
+                     font=("Segoe UI",9), fg=TEXT, bg=BG).pack(padx=20, pady=(16,4), anchor="w")
+            txt = tk.Text(dlg, font=("Segoe UI",9), fg=TEXT, bg=PANEL,
+                          relief="flat", bd=1, width=44, height=7,
+                          wrap="word", insertbackground=TEXT)
+            txt.pack(padx=20, pady=(0,4))
+            txt.focus_set()
 
-            params = urllib.parse.urlencode({
-                "title": "[Bug] ",
-                "body": debug,
-                "labels": "bug"
-            })
-            url = f"https://github.com/{GITHUB_REPO}/issues/new?{params}"
-            webbrowser.open(url)
+            status_lbl = tk.Label(dlg, text="", font=("Segoe UI",8),
+                                  fg=SUBTEXT, bg=BG)
+            status_lbl.pack(padx=20, anchor="w")
+
+            bf = tk.Frame(dlg, bg=BG); bf.pack(padx=20, pady=(8,16), anchor="e")
+            tk.Button(bf, text="Cancel", font=("Segoe UI",9),
+                      bg=BORDER, fg=TEXT, relief="flat", cursor="hand2",
+                      padx=10, pady=4, command=dlg.destroy).pack(side="left", padx=(0,8))
+
+            def _send():
+                msg = txt.get("1.0","end").strip()
+                if not msg:
+                    status_lbl.config(text="Please describe the issue first.", fg="#ff6b6b")
+                    return
+                # Read crash log
+                crash_log = APPDATA_DIR / "crash.log"
+                log_text = ""
+                try:
+                    if crash_log.exists():
+                        raw = crash_log.read_text(encoding="utf-8", errors="replace")
+                        log_text = raw[-5000:] if len(raw) > 5000 else raw
+                except: pass
+
+                send_btn.config(state="disabled", text="Sending…")
+                status_lbl.config(text="", fg=SUBTEXT)
+
+                def _do_send():
+                    import urllib.request, json
+                    payload = {
+                        "version": APP_VER,
+                        "os":      platform.version()[:40],
+                        "message": msg,
+                        "log":     log_text,
+                    }
+                    try:
+                        req = urllib.request.Request(
+                            ANALYTICS_URL.replace("/ping", "/report"),
+                            data=json.dumps(payload).encode(),
+                            headers={"Content-Type":"application/json",
+                                     "User-Agent":f"KnobMixer/{APP_VER}"},
+                            method="POST"
+                        )
+                        urllib.request.urlopen(req, timeout=8)
+                        self.root.after(0, lambda: (
+                            status_lbl.config(text="Report sent. Thank you!", fg="#1DB954"),
+                            send_btn.config(state="disabled", text="Sent ✓")
+                        ))
+                    except Exception:
+                        self.root.after(0, lambda: (
+                            status_lbl.config(
+                                text="Could not send. Check your connection.", fg="#ff6b6b"),
+                            send_btn.config(state="normal", text="Send Report")
+                        ))
+                threading.Thread(target=_do_send, daemon=True).start()
+
+            send_btn = tk.Button(bf, text="Send Report",
+                                 font=("Segoe UI",9,"bold"),
+                                 bg="#1DB954", fg="white", relief="flat",
+                                 cursor="hand2", padx=12, pady=4, command=_send)
+            send_btn.pack(side="left")
 
         def _open_log_folder():
-            """Open the KnobMixer data folder so user can attach crash.log."""
             import subprocess
-            try:
-                subprocess.Popen(["explorer", str(APPDATA_DIR)])
-            except Exception as e:
-                import tkinter.messagebox as _mb
-                _mb.showinfo("Log folder",
-                    f"Logs are at:\n{APPDATA_DIR}\n\nAttach crash.log to your bug report.",
-                    parent=self)
+            try: subprocess.Popen(["explorer", str(APPDATA_DIR)])
+            except: pass
 
         tk.Button(f_links, text="Report a bug",
                   font=("Segoe UI", 8), bg=BORDER, fg=TEXT,
@@ -2471,6 +2578,32 @@ class SettingsWin(tk.Toplevel):
         make_hotkey_btn(f_hk, cur_hk, _hk_cb).pack(side="left")
 
         self._sep(sc, "Icon")
+        # Position preset selector
+        self._v_micpos = tk.StringVar(value=self.cfg.get("mic_position", "bottom-right"))
+        def _on_micpos(*_):
+            pos = self._v_micpos.get()
+            self.cfg["mic_position"] = pos
+            if pos != "custom":
+                self.cfg["mic_icon_x"] = -1
+                self.cfg["mic_icon_y"] = -1
+            self._apply()
+            # Rebuild mic overlay so it moves to new position immediately
+            if hasattr(self, "_app_ref") and self._app_ref:
+                app = self._app_ref
+                if app.mic_ov:
+                    app.mic_ov.rebuild()
+        f_micpos = tk.Frame(sc, bg=BG); f_micpos.pack(fill="x", padx=16, pady=4)
+        tk.Label(f_micpos, text="Icon position", font=("Segoe UI",9),
+                 fg=TEXT, bg=BG, width=28, anchor="w").pack(side="left")
+        micpos_cb = ttk.Combobox(f_micpos, textvariable=self._v_micpos,
+                                  values=["top-left","top-right","bottom-left",
+                                          "bottom-right","center","custom"],
+                                  state="readonly", width=14, font=("Segoe UI",9))
+        micpos_cb.pack(side="left")
+        micpos_cb.bind("<<ComboboxSelected>>", _on_micpos)
+        tk.Label(sc, text="Drag the icon to move it. Position changes to Custom automatically.",
+                 font=("Segoe UI", 8), fg=SUBTEXT, bg=BG,
+                 wraplength=420).pack(padx=16, anchor="w")
         self._row(sc, "Icon size (px)",
                   lambda p: self._sld(p, self._v_micsz, 16, 80, 4).pack(side="left"))
         self._row(sc, "Transparency (1.0 = solid)",
@@ -2519,12 +2652,14 @@ class SettingsWin(tk.Toplevel):
         c = self.cfg
         c["start_minimized"]   = self._v_startmin.get()
 
-        c["show_overlay"]      = self._v_overlay.get()
+        c["show_overlay"]       = self._v_overlay.get()
+        c["overlay_size"]       = round(self._v_ovsize.get(), 1)
+        if hasattr(self, "_v_ovpos"):
+            c["overlay_position"] = self._v_ovpos.get()
         # overlay position is saved directly by drag — preserve it here
         c.setdefault("overlay_x", self.cfg.get("overlay_x", -1))
         c.setdefault("overlay_y", self.cfg.get("overlay_y", -1))
         c["analytics_enabled"] = self._v_analytics.get()
-        c["overlay_size"]      = round(self._v_ovsize.get(), 1)
         set_startup(self._v_startup.get())
         c["slowdown_enabled"]  = self._v_sden.get()
         c["slowdown_threshold"]= self._v_sdthr.get()
@@ -3401,19 +3536,27 @@ class App:
                      font=("Segoe UI",8), fg=SUBTEXT, bg=PANEL).pack(side="left", padx=(8,0))
 
     def _on_mode(self):
-        self.cfg["mode"]=self._mode_var.get()
+        mode = self._mode_var.get()
+        self.cfg["mode"] = mode
+        # When switching to multi: suspend hw_knob in the hook but preserve the
+        # user's preference in cfg so it restores when switching back to single.
+        # The hook checks mode=="single" before acting on hw_knob_enabled, so
+        # simply reloading hotkeys with mode="multi" is enough to deactivate it.
         self._init_single()
-        self.hk.reload(self.cfg,self._on_vol,self._on_switch)
+        self.hk.reload(self.cfg, self._on_vol, self._on_switch)
         self._redraw()
-        if self.cfg["mode"]=="single":
+        if mode == "single":
             self._sb.pack(fill="x")
+            # Rebuild knob panel so it reflects current hw_knob_enabled state
+            self._rebuild_knob_panel()
             self._knob_panel.pack(fill="x", before=self._groups_cf)
             self._hw_row.pack(fill="x", before=self._groups_cf)
+            # Sync the checkbox to the saved preference
+            self._hw_var.set(self.cfg.get("hw_knob_enabled", False))
         else:
             self._sb.pack_forget()
             self._knob_panel.pack_forget()
-            if not self.cfg.get("hw_knob_enabled", False):
-                self._hw_row.pack_forget()
+            self._hw_row.pack_forget()
         self._autosave()
 
     def _init_single(self):
@@ -3473,6 +3616,8 @@ class App:
 
     # ── Global on/off ─────────────────────────────────────────────────────────
     def set_update_available(self, ver, url):
+        self._update_available = True
+        self.root.after(0, self._refresh_tray)  # update tray badge
         """Called when a newer version is found — shows download button."""
         self._update_url[0] = url
         self._update_ver    = ver
@@ -3692,7 +3837,7 @@ class App:
             self._settings_win.lift()
             return
         self._settings_win = SettingsWin(self.root, self.cfg, self._on_settings_change,
-                                          quit_fn=self._quit)
+                                          quit_fn=self._quit, app_ref=self)
 
     def _on_settings_change(self):
         # Force-hide volume popup — settings changes can trigger hk.reload
@@ -3703,14 +3848,17 @@ class App:
         self.hk.reload(self.cfg,self._on_vol,self._on_switch)
         self._reg_mic_hk()
         if self.cfg.get("mic_enabled",True):
-            if self.mic_ov: self.mic_ov.update()
-            else: self.mic_ov=MicOverlay(self.root,self.mic,self.cfg)
+            if self.mic_ov:
+                self.mic_ov.update()   # refresh settings (size, alpha, etc)
+                self.mic_ov.show()     # make visible — needed when re-enabling
+            else:
+                self.mic_ov = MicOverlay(self.root, self.mic, self.cfg)
         else:
             if self.mic_ov: self.mic_ov.hide()
 
     # ── Tray ─────────────────────────────────────────────────────────────────
     def _setup_tray(self):
-        img=make_tray_img(self.cfg["groups"],self._enabled,mic_muted=self.mic.get() if self.cfg.get("mic_enabled") else None)
+        img=make_tray_img(self.cfg["groups"],self._enabled,mic_muted=self.mic.get() if self.cfg.get("mic_enabled") else None,update_available=False)
         menu=pystray.Menu(
             pystray.MenuItem("Open KnobMixer",self._show,default=True),
             pystray.Menu.SEPARATOR,
@@ -3737,12 +3885,15 @@ class App:
             self.root.deiconify()
             self.root.lift()
             self.root.focus_force()
-            # Also bring any open child windows (settings, edit apps etc)
+            # Bring open UI child windows (settings, edit dialogs) but NOT
+            # overlay windows. Overlays have overrideredirect=True and manage
+            # their own visibility — deiconifying them causes the spurious popup bug.
             for w in self.root.winfo_children():
                 if isinstance(w, tk.Toplevel) and w.winfo_exists():
                     try:
-                        w.deiconify()
-                        w.lift()
+                        if not w.overrideredirect():  # skip overlays
+                            w.deiconify()
+                            w.lift()
                     except: pass
         self.root.after(0, _do_show)
     def _quit(self,*_):
@@ -3751,6 +3902,11 @@ class App:
         self.hk.stop(); _HOOK.stop(); self.tray.stop(); self.root.after(0,self.root.destroy)
 
     def run(self):
+        global _update_callback
+        # Route update results to this app instance's UI handler
+        def _on_update(ver, url):
+            self.root.after(0, lambda: self.set_update_available(ver, url))
+        _update_callback = _on_update
         self.root.after(3000, self._hook_health_check)
         self.root.after(2000, self._sync_mute_states)
         # Mark hotkeys as active after startup — prevents spurious overlay shows
@@ -4025,6 +4181,7 @@ class AppsDialog(tk.Toplevel):
 ANALYTICS_URL = "https://knobmixer-analytics.bdhhair11.workers.dev/ping"  # your Cloudflare Worker URL
 GITHUB_REPO   = "KnobMixer/KnobMixer"
 UPDATE_CHECK  = True        # set False to disable update checks entirely
+_update_callback = None    # set by App to route update results to UI
 
 def _get_install_id():
     """Persistent random ID per installation. Not tied to any person."""
@@ -4078,11 +4235,16 @@ def _ping_analytics(cfg=None):
             )
             urllib.request.urlopen(req, timeout=5)
             _stamp_ping_today()  # only stamp on success (#3)
+            # Trigger update check now that we know internet is available
+            if UPDATE_CHECK:
+                _fetch_latest_version(_update_callback, auto=True)
         except Exception:
             # Non-blocking retry with threading.Timer (#10)
-            delays = [30, 300, 1800]
+            # Retry schedule: 15s, 1min, 5min, 15min, 1hr
+            # Covers slow boot network connections (Start With Windows users)
+            delays = [15, 60, 300, 900, 3600]
             if attempt < len(delays):
-                threading.Timer(delays[attempt], lambda: _send(attempt + 1)).start()
+                threading.Timer(delays[attempt], lambda a=attempt: _send(a + 1)).start()
             # else: silently give up until next launch
 
     threading.Thread(target=_send, daemon=True).start()
