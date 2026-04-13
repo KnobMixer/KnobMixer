@@ -3903,9 +3903,14 @@ class App:
 
     def run(self):
         global _update_callback
-        # Route update results to this app instance's UI handler
+        # Route update results to this app instance's UI handler.
+        # Guard: only call set_update_available if the fetched version is
+        # strictly newer than the running version. Without this guard,
+        # any successful fetch — even returning the same version — would
+        # incorrectly show the update badge.
         def _on_update(ver, url):
-            self.root.after(0, lambda: self.set_update_available(ver, url))
+            if ver and _ver_tuple(ver) > _ver_tuple(APP_VER):
+                self.root.after(0, lambda: self.set_update_available(ver, url))
         _update_callback = _on_update
         self.root.after(3000, self._hook_health_check)
         self.root.after(2000, self._sync_mute_states)
@@ -4235,8 +4240,10 @@ def _ping_analytics(cfg=None):
             )
             urllib.request.urlopen(req, timeout=5)
             _stamp_ping_today()  # only stamp on success (#3)
-            # Trigger update check now that we know internet is available
-            if UPDATE_CHECK:
+            # Trigger update check — but only if the weekly check hasn't run yet.
+            # Without this guard the check fires every day (each ping success),
+            # causing "update available" to show even on the current version.
+            if UPDATE_CHECK and _should_check_update_this_week():
                 _fetch_latest_version(_update_callback, auto=True)
         except Exception:
             # Non-blocking retry with threading.Timer (#10)
