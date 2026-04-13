@@ -2415,16 +2415,20 @@ class SettingsWin(tk.Toplevel):
                             method="POST"
                         )
                         urllib.request.urlopen(req, timeout=8)
-                        self.root.after(0, lambda: (
-                            status_lbl.config(text="Report sent. Thank you!", fg="#1DB954"),
-                            send_btn.config(state="disabled", text="Sent ✓")
-                        ))
+                        def _on_success():
+                            try:
+                                status_lbl.config(text="Report sent. Thank you!", fg="#1DB954")
+                                send_btn.config(state="disabled", text="Sent ✓")
+                            except tk.TclError: pass
+                        self.after(0, _on_success)
                     except Exception:
-                        self.root.after(0, lambda: (
-                            status_lbl.config(
-                                text="Could not send. Check your connection.", fg="#ff6b6b"),
-                            send_btn.config(state="normal", text="Send Report")
-                        ))
+                        def _on_fail():
+                            try:
+                                status_lbl.config(
+                                    text="Could not send. Check your connection.", fg="#ff6b6b")
+                                send_btn.config(state="normal", text="Send Report")
+                            except tk.TclError: pass
+                        self.after(0, _on_fail)
                 threading.Thread(target=_do_send, daemon=True).start()
 
             send_btn = tk.Button(bf, text="Send Report",
