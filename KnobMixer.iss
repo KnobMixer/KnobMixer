@@ -1,6 +1,8 @@
 ; KnobMixer Inno Setup Script
 #define MyAppName      "KnobMixer"
-#define MyAppVersion   "2.7.4"
+#ifndef MyAppVersion
+#define MyAppVersion   "2.7.5"
+#endif
 #define MyAppPublisher "KnobMixer"
 #define MyAppURL       "https://github.com/KnobMixer/KnobMixer"
 #define MyAppExeName   "KnobMixer.exe"
