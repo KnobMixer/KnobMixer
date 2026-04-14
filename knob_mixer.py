@@ -559,7 +559,7 @@ def load_cfg():
                         ("slowdown_threshold",10),("slowdown_step",0.5),
                         ("single_default_group",0),("single_timeout",30),("single_auto_revert",False),("hw_knob_enabled",False),("hw_knob_group",0),("cycle_key",""),
                         ("single_keys",{"vol_down":"","vol_up":"","mute":""}),
-                        ("mic_enabled",True),("mic_device",""),("mic_hotkey","f9"),
+                        ("mic_enabled",False),("mic_device",""),("mic_hotkey","f9"),
                         ("mic_start_muted",False),("mic_sound_volume",0.056),
                         ("mic_sound_preset",0),("mic_position","bottom-right"),("mic_icon_x",-1),("mic_icon_y",-1),
                         ("mic_icon_size",40),("mic_icon_alpha",0.85),
@@ -2824,7 +2824,7 @@ class SettingsWin(tk.Toplevel):
     def _build_mic(self, nb):
         sc = self._make_tab(nb, "Mic Toggle")
 
-        self._v_micen    = tk.BooleanVar(value=self.cfg.get("mic_enabled", True))
+        self._v_micen    = tk.BooleanVar(value=self.cfg.get("mic_enabled", False))
         self._v_michk    = tk.StringVar(value=self.cfg.get("mic_hotkey", "f9"))
         self._v_micst    = tk.BooleanVar(value=self.cfg.get("mic_start_muted", False))
         self._v_micvol   = tk.IntVar(value=_level_from_vol(self.cfg.get("mic_sound_volume", 0.056)))
@@ -3269,11 +3269,11 @@ class App:
         self.hk.reload(self.cfg,self._on_vol,self._on_switch)  # then registers keys
         self._reg_mic_hk()
 
-        if self.cfg.get("mic_enabled",True):
-            self.mic.sync()
-            if self.cfg.get("mic_start_muted",False):
-                self.mic.set(True,{"mic_sound_volume":0,"mic_sound_preset":0})
-            self.mic_ov=MicOverlay(self.root,self.mic,self.cfg)
+        if self.cfg.get("mic_enabled", False):
+            self.mic.sync(self.cfg)
+            if self.cfg.get("mic_start_muted", False):
+                self.mic.set(True, self.cfg)
+            self.mic_ov = MicOverlay(self.root, self.mic, self.cfg)
 
         self._refresh_loop()
         self._setup_tray()
@@ -4193,7 +4193,7 @@ class App:
         # The actual registration happens in HotkeyEngine.reload() below,
         # but mic is separate so we add it directly here.
         hk = self.cfg.get("mic_hotkey","").strip()
-        if not hk or not self.cfg.get("mic_enabled", True):
+        if not hk or not self.cfg.get("mic_enabled", False):
             return
         # suppress=False: key passes through to game AND triggers mic toggle
         _HOOK.register(hk, self._toggle_mic, suppress=False)
@@ -4300,7 +4300,7 @@ class App:
             self.cfg.get("show_overlay", True)))
         self.hk.reload(self.cfg,self._on_vol,self._on_switch)
         self._reg_mic_hk()
-        if self.cfg.get("mic_enabled",True):
+        if self.cfg.get("mic_enabled", False):
             if self.mic_ov:
                 self.mic_ov.update()   # refresh settings (size, alpha, etc)
                 self.mic_ov.show()     # make visible — needed when re-enabling
