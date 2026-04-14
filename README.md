@@ -46,13 +46,13 @@ Control the volume of individual apps independently. Turn one knob for your game
 </tr>
 </table>
 
-*Can't remap your knob? Enable Hardware Knob in Settings → 1-Knob Mode. Only set a hotkey for the cycle key (The vol-,vol+, mute should be disabled in next update)*
+*Can't remap your knob? Enable Hardware Knob in Settings → 1-Knob Mode. Set a hotkey for the cycle key*
 
 💡 In Multiple Knobs mode, set the music knob click to Play/Pause in your keyboard software. It will pause the song instead of muting the audio.
 
 **Step 2 — Choose your mode**
-- **Multiple Knobs** — each group has its own hotkeys. Best if you have 2+ knobs
 - **1-Knob mode** — one knob controls all groups, press Cycle key to switch between them
+- **Multiple Knobs** — each group has its own hotkeys. Best if you have 2+ knobs
 
 **Step 3 — Set your hotkeys**
 
