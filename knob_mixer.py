@@ -1,5 +1,5 @@
 """
-KnobMixer v2.7.4
+KnobMixer v2.7.5
 Free per-app volume control for keyboard knobs and hotkeys.
 https://github.com/KnobMixer/KnobMixer
 """
@@ -42,7 +42,7 @@ _cleanup_temp_wavs()
 import traceback as _tb
 
 def _setup_crash_log():
-    """Redirect unhandled exceptions to a crash log in %APPDATA%\KnobMixer."""
+    """Redirect unhandled exceptions to a crash log in %APPDATA%\\KnobMixer."""
     log_dir = Path(os.getenv("APPDATA",".")) / "KnobMixer"
     log_dir.mkdir(parents=True, exist_ok=True)
     log_file = log_dir / "crash.log"
@@ -68,6 +68,127 @@ import ctypes, ctypes.wintypes
 from PIL import Image, ImageDraw, ImageTk
 from pycaw.pycaw import AudioUtilities, ISimpleAudioVolume, IAudioEndpointVolume
 from comtypes import CLSCTX_ALL
+
+def _init_ttk_theme(widget):
+    st = ttk.Style(widget)
+    try:
+        st.theme_use("clam")
+    except Exception:
+        pass
+    st.configure("TNotebook", background=BG, borderwidth=0)
+    st.configure("TNotebook.Tab", background=PANEL, foreground=TEXT,
+                 padding=[14, 6])
+    st.map("TNotebook.Tab", background=[("selected", BORDER)])
+    st.configure("Knob.TCombobox",
+                 fieldbackground=PANEL, background=BORDER,
+                 foreground=TEXT, arrowcolor=TEXT,
+                 bordercolor=BORDER, lightcolor=BORDER, darkcolor=BORDER)
+    st.map("Knob.TCombobox",
+           fieldbackground=[("readonly", PANEL)],
+           background=[("readonly", BORDER), ("active", HOVER)],
+           foreground=[("readonly", TEXT)])
+    st.configure("Knob.Vertical.TScrollbar",
+                 background=SB_THUMB, troughcolor=SB_TRACK,
+                 bordercolor=SB_TRACK, arrowcolor=SUBTEXT,
+                 darkcolor=SB_THUMB, lightcolor=SB_THUMB,
+                 gripcount=0, relief="flat", width=10)
+    st.map("Knob.Vertical.TScrollbar",
+           background=[("active", SB_ACTIVE), ("pressed", SB_ACTIVE)])
+
+def _place_near_parent(win, parent, side="left", overlap=28, margin=20):
+    try:
+        class POINT(ctypes.Structure):
+            _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+        class RECT(ctypes.Structure):
+            _fields_ = [("left", ctypes.c_long), ("top", ctypes.c_long),
+                        ("right", ctypes.c_long), ("bottom", ctypes.c_long)]
+        class MONITORINFO(ctypes.Structure):
+            _fields_ = [("cbSize", ctypes.c_ulong), ("rcMonitor", RECT),
+                        ("rcWork", RECT), ("dwFlags", ctypes.c_ulong)]
+
+        def _work_area_for_parent():
+            user32 = getattr(ctypes, "windll", None)
+            user32 = getattr(user32, "user32", None) if user32 else None
+            if not user32:
+                raise RuntimeError("No user32")
+            cx = parent.winfo_rootx() + max(1, parent.winfo_width()) // 2
+            cy = parent.winfo_rooty() + max(1, parent.winfo_height()) // 2
+            pt = POINT(cx, cy)
+            monitor = user32.MonitorFromPoint(pt, 2)
+            if not monitor:
+                raise RuntimeError("No monitor")
+            mi = MONITORINFO()
+            mi.cbSize = ctypes.sizeof(MONITORINFO)
+            if not user32.GetMonitorInfoW(monitor, ctypes.byref(mi)):
+                raise RuntimeError("GetMonitorInfoW failed")
+            return mi.rcWork.left, mi.rcWork.top, mi.rcWork.right, mi.rcWork.bottom
+
+        win.update_idletasks()
+        parent.update_idletasks()
+        pw, ph = parent.winfo_width(), parent.winfo_height()
+        px, py = parent.winfo_rootx(), parent.winfo_rooty()
+        ww, wh = win.winfo_reqwidth(), win.winfo_reqheight()
+        wa_left, wa_top, wa_right, wa_bottom = _work_area_for_parent()
+        if side == "left":
+            x = px - ww + overlap
+            if x < wa_left + margin:
+                x = px + pw - overlap
+        else:
+            x = px + pw - overlap
+        y = py + 30
+        x = max(wa_left + margin, min(x, wa_right - ww - margin))
+        y = max(wa_top + margin, min(y, wa_bottom - wh - margin))
+        win.geometry(f"+{int(x)}+{int(y)}")
+    except Exception:
+        pass
+
+def _themed_confirm(parent, title, message, yes_text="Yes", no_text="Cancel", danger=False):
+    result = {"ok": False}
+    dlg = tk.Toplevel(parent)
+    dlg.title(title)
+    dlg.configure(bg=BG)
+    dlg.resizable(False, False)
+    dlg.grab_set()
+    dlg.transient(parent)
+    _place_near_parent(dlg, parent, side="left")
+    tk.Label(dlg, text=title, font=("Segoe UI",10,"bold"),
+             fg=TEXT, bg=BG).pack(anchor="w", padx=18, pady=(16,6))
+    tk.Label(dlg, text=message, font=("Segoe UI",9),
+             fg=SUBTEXT, bg=BG, justify="left",
+             wraplength=320).pack(anchor="w", padx=18, pady=(0,12))
+    bf = tk.Frame(dlg, bg=BG)
+    bf.pack(anchor="e", padx=18, pady=(0,16))
+    tk.Button(bf, text=no_text, font=("Segoe UI",9),
+              bg=BORDER, fg=TEXT, relief="flat", cursor="hand2",
+              padx=10, pady=4, command=dlg.destroy).pack(side="left", padx=(0,8))
+    def _yes():
+        result["ok"] = True
+        dlg.destroy()
+    tk.Button(bf, text=yes_text, font=("Segoe UI",9,"bold"),
+              bg="#3a1a1a" if danger else "#183524",
+              fg="#ff8b95" if danger else "#1DB954",
+              relief="flat", cursor="hand2", padx=10, pady=4,
+              command=_yes).pack(side="left")
+    dlg.wait_window()
+    return result["ok"]
+
+def _themed_alert(parent, title, message):
+    dlg = tk.Toplevel(parent)
+    dlg.title(title)
+    dlg.configure(bg=BG)
+    dlg.resizable(False, False)
+    dlg.grab_set()
+    dlg.transient(parent)
+    _place_near_parent(dlg, parent, side="left")
+    tk.Label(dlg, text=title, font=("Segoe UI",10,"bold"),
+             fg=TEXT, bg=BG).pack(anchor="w", padx=18, pady=(16,6))
+    tk.Label(dlg, text=message, font=("Segoe UI",9),
+             fg=SUBTEXT, bg=BG, justify="left",
+             wraplength=320).pack(anchor="w", padx=18, pady=(0,12))
+    tk.Button(dlg, text="OK", font=("Segoe UI",9,"bold"),
+              bg=BORDER, fg=TEXT, relief="flat", cursor="hand2",
+              padx=12, pady=4, command=dlg.destroy).pack(anchor="e", padx=18, pady=(0,16))
+    dlg.wait_window()
 
 # ── Win32 Low-Level Keyboard Hook ────────────────────────────────────────────
 # Same mechanism used by Discord, OBS, TeamSpeak, etc.
@@ -316,7 +437,7 @@ _HOOK = GlobalHookManager()
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 APP_NAME    = "KnobMixer"
-APP_VER     = "2.7.4"
+APP_VER     = "2.7.5"
 APPDATA_DIR = Path(os.getenv("APPDATA",".")) / APP_NAME
 APPDATA_DIR.mkdir(parents=True, exist_ok=True)
 CONFIG_FILE = APPDATA_DIR / "config.json"
@@ -330,6 +451,11 @@ BORDER  = "#2a2a3e"
 TEXT    = "#e8e8f0"
 SUBTEXT = "#6b6b8a"
 HOVER   = "#252535"
+PANEL_SOFT = "#232334"
+INPUT_BG = "#181824"
+SB_TRACK = "#141421"
+SB_THUMB = "#4a4a70"
+SB_ACTIVE = "#6d6da3"
 
 # Sound presets: (display_name, shape, mute_params, unmute_params)
 # Params: (freq, dur_ms, vol_scale)
@@ -468,6 +594,68 @@ def save_cfg(cfg):
             print(f"[Config] Save failed: {e}")
             try: tmp.unlink()
             except: pass
+
+_REPORT_COOLDOWN_SECS = 15 * 60
+_REPORT_MAX_CHARS     = 2000
+_REPORT_LOG_MAX_CHARS = 3000
+
+def _report_state_file():
+    return APPDATA_DIR / "report_state.json"
+
+def _load_report_state():
+    try:
+        return json.loads(_report_state_file().read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+def _save_report_state(state):
+    try:
+        _report_state_file().write_text(json.dumps(state, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+def _report_endpoint():
+    if not ANALYTICS_URL:
+        return ""
+    return ANALYTICS_URL.replace("/ping", "/report")
+
+def _report_status():
+    state = _load_report_state()
+    now = int(time.time())
+    next_allowed = int(state.get("next_allowed_at", 0) or 0)
+    last_hash = str(state.get("last_hash", "") or "")
+    last_sent = int(state.get("last_sent_at", 0) or 0)
+    return state, now, next_allowed, last_hash, last_sent
+
+def _report_validate_message(msg):
+    msg = (msg or "").strip()
+    if not msg:
+        return False, "Please describe the issue first."
+    if len(msg) < 10:
+        return False, "Please add a little more detail so I can understand the issue."
+    if len(msg) > _REPORT_MAX_CHARS:
+        return False, f"Please keep the report under {_REPORT_MAX_CHARS} characters."
+    return True, ""
+
+def _report_can_send(msg):
+    import hashlib
+    state, now, next_allowed, last_hash, last_sent = _report_status()
+    if now < next_allowed:
+        remain = max(1, int(math.ceil((next_allowed - now) / 60)))
+        return False, f"Please wait about {remain} minute(s) before sending another report."
+    msg_hash = hashlib.sha256(msg.strip().encode("utf-8", errors="ignore")).hexdigest()
+    if msg_hash == last_hash and (now - last_sent) < 24 * 3600:
+        return False, "That same report was already sent recently."
+    return True, ""
+
+def _mark_report_sent(msg):
+    import hashlib
+    now = int(time.time())
+    _save_report_state({
+        "last_sent_at": now,
+        "next_allowed_at": now + _REPORT_COOLDOWN_SECS,
+        "last_hash": hashlib.sha256(msg.strip().encode("utf-8", errors="ignore")).hexdigest(),
+    })
 
 # ── Startup ───────────────────────────────────────────────────────────────────
 def set_startup(en):
@@ -648,6 +836,7 @@ class HotkeyCapture:
     - Escape cancels
     - Supports: F22, Alt+X, Ctrl+F13, Win+F18, single keys, etc.
     """
+    _ACTIVE_CAPTURE = None
     MOD_NAMES = {"ctrl","left ctrl","right ctrl","shift","left shift","right shift",
                  "alt","left alt","right alt","windows","left windows","right windows","win"}
     MOD_NORM  = {"ctrl":"ctrl","left ctrl":"ctrl","right ctrl":"ctrl",
@@ -664,15 +853,21 @@ class HotkeyCapture:
         btn.config(command=self._start)
 
     def _start(self):
+        if HotkeyCapture._ACTIVE_CAPTURE and HotkeyCapture._ACTIVE_CAPTURE is not self:
+            try: HotkeyCapture._ACTIVE_CAPTURE._finish(None)
+            except: pass
         if self._active: return
         self._active = True
+        HotkeyCapture._ACTIVE_CAPTURE = self
         self._held.clear()
         self._btn.config(text="Press keys…", bg="#2a4a2a", fg="#1DB954")
         keyboard.hook(self._on_event, suppress=True)
 
     # Media key names that are invalid as group hotkeys (#18)
     _INVALID_KEYS = {"volume up","volume down","volume mute","play/pause media",
-                     "media play/pause","next track","prev track","media stop"}
+                     "media play/pause","next track","prev track","media stop",
+                     "left button","right button","middle button","x button 1","x button 2",
+                     "mouse wheel up","mouse wheel down","wheel up","wheel down"}
 
     def _on_event(self, ev):
         if not self._active: return
@@ -683,7 +878,8 @@ class HotkeyCapture:
                 self._finish(None)
                 return
             # Reject media keys with visual feedback (#18)
-            if name in self._INVALID_KEYS:
+            if (name in self._INVALID_KEYS or "button" in name or
+                name.startswith("mouse ") or name.startswith("wheel ")):
                 self._btn.after(0, lambda: self._btn.config(
                     text="Invalid key", bg="#3a1a1a", fg="#ff6b6b"))
                 self._btn.after(1200, lambda: self._btn.config(
@@ -718,20 +914,61 @@ class HotkeyCapture:
     def _finish(self, combo):
         if not self._active: return
         self._active = False
+        if HotkeyCapture._ACTIVE_CAPTURE is self:
+            HotkeyCapture._ACTIVE_CAPTURE = None
         # Only unhook our specific hook, not ALL hooks (#5 — was killing GlobalHookManager)
         try: keyboard.unhook(self._on_event)
         except: pass
         if combo:
             self._btn.after(0, lambda: self._btn.config(
-                text=fmt_hotkey(combo), bg=BORDER, fg=TEXT))
+                text=fmt_hotkey(combo), bg=INPUT_BG, fg=TEXT,
+                highlightbackground=BORDER, highlightcolor=BORDER))
             self._cb(combo)
         else:
             self._btn.after(0, lambda: self._btn.config(
-                text=self._orig, bg=BORDER, fg=TEXT))
+                text=self._orig, bg=INPUT_BG, fg=TEXT,
+                highlightbackground=BORDER, highlightcolor=BORDER))
 
 def fmt_hotkey(raw):
     if not raw: return "—"
     return "+".join(p.strip().upper() for p in raw.split("+") if p.strip())
+
+def _iter_assigned_hotkeys(cfg):
+    for g in cfg.get("groups", []):
+        gid = g.get("id", id(g))
+        for action, hk in g.get("keys", {}).items():
+            if hk.strip():
+                yield ("group", gid, action), hk.strip()
+        sk = g.get("single_key", "").strip()
+        if sk:
+            yield ("single_group", gid), sk
+    for action, hk in cfg.get("single_keys", {}).items():
+        if hk.strip():
+            yield ("single_shared", action), hk.strip()
+    ck = cfg.get("cycle_key", "").strip()
+    if ck:
+        yield ("cycle",), ck
+    mh = cfg.get("mic_hotkey", "").strip()
+    if mh:
+        yield ("mic",), mh
+
+def _hotkey_in_use(cfg, hotkey, slot_id):
+    want = hotkey.strip().lower()
+    for other_slot, other_hk in _iter_assigned_hotkeys(cfg):
+        if other_slot == slot_id:
+            continue
+        if other_hk.strip().lower() == want:
+            return True
+    return False
+
+def _validate_hotkey_choice(cfg, hotkey, slot_id):
+    hotkey = (hotkey or "").strip()
+    mods, vk = _parse_hotkey(hotkey)
+    if not hotkey or vk is None:
+        return False, "That key combo is not supported."
+    if _hotkey_in_use(cfg, hotkey, slot_id):
+        return False, "That hotkey is already in use."
+    return True, ""
 
 def make_hotkey_btn(parent, current_key, callback, label_prefix=""):
     """Create a hotkey button with inline capture. Returns the button.
@@ -739,9 +976,11 @@ def make_hotkey_btn(parent, current_key, callback, label_prefix=""):
     display = fmt_hotkey(current_key) if current_key else "—"
     text    = f"{label_prefix}{display}" if label_prefix else display
     btn = tk.Button(parent, text=text,
-                    font=("Consolas",8), bg=BORDER, fg=TEXT,
-                    activebackground=HOVER, relief="flat",
-                    cursor="hand2", padx=8, pady=2)
+                    font=("Consolas",8), bg=INPUT_BG, fg=TEXT,
+                    activebackground=HOVER, activeforeground=TEXT,
+                    relief="flat", cursor="hand2",
+                    padx=9, pady=3, bd=0, highlightthickness=1,
+                    highlightbackground=BORDER, highlightcolor=BORDER)
     btn._capture = HotkeyCapture(btn, callback, text)
     return btn
 
@@ -2020,6 +2259,7 @@ class SettingsWin(tk.Toplevel):
         self.geometry("540x580")
         self.resizable(True, True)
         self._build()
+        _place_near_parent(self, parent, side="left")
 
     # ── Simple scrollable tab helper ─────────────────────────────────────────
     def _make_tab(self, nb, title):
@@ -2031,7 +2271,7 @@ class SettingsWin(tk.Toplevel):
 
         # Minimal scrollbar: thin strip, auto-hides
         sb_frame = tk.Frame(outer, bg=BG, width=10)
-        sb_thumb  = tk.Frame(sb_frame, bg="#4a4a70", cursor="hand2")
+        sb_thumb  = tk.Frame(sb_frame, bg=SB_THUMB, cursor="hand2")
         sb_vis    = [False]
 
         canvas.pack(side="left", fill="both", expand=True)
@@ -2078,6 +2318,8 @@ class SettingsWin(tk.Toplevel):
         sb_thumb.bind("<ButtonPress-1>",_sp)
         sb_thumb.bind("<B1-Motion>",_sm)
         sb_thumb.bind("<ButtonRelease-1>",_sr)
+        sb_thumb.bind("<Enter>", lambda e: sb_thumb.config(bg=SB_ACTIVE))
+        sb_thumb.bind("<Leave>", lambda e: sb_thumb.config(bg=SB_THUMB))
 
         inner.bind("<Configure>", _update)
         canvas.bind("<Configure>", lambda e: (
@@ -2137,12 +2379,7 @@ class SettingsWin(tk.Toplevel):
 
     # ── Build ────────────────────────────────────────────────────────────────
     def _build(self):
-        st = ttk.Style()
-        st.theme_use("clam")
-        st.configure("TNotebook", background=BG, borderwidth=0)
-        st.configure("TNotebook.Tab", background=PANEL, foreground=TEXT,
-                     padding=[14, 6])
-        st.map("TNotebook.Tab", background=[("selected", BORDER)])
+        _init_ttk_theme(self)
 
         nb = ttk.Notebook(self)
         nb.pack(fill="both", expand=True, padx=8, pady=(8, 0))
@@ -2167,17 +2404,58 @@ class SettingsWin(tk.Toplevel):
         outer = tk.Frame(nb, bg=BG)
         nb.add(outer, text="How To Use")
 
-        sb = tk.Scrollbar(outer, orient="vertical")
-        sb.pack(side="right", fill="y")
+        body = tk.Frame(outer, bg=PANEL, highlightthickness=1, highlightbackground=BORDER)
+        body.pack(fill="both", expand=True, padx=12, pady=12)
 
-        txt = tk.Text(outer, font=("Segoe UI", 9), fg=TEXT, bg=BG,
+        sb_frame = tk.Frame(body, bg=BG, width=10)
+        sb_thumb = tk.Frame(sb_frame, bg=SB_THUMB, cursor="hand2")
+        sb_vis = [False]
+        sb_frame.pack(side="right", fill="y")
+
+        txt = tk.Text(body, font=("Segoe UI", 9), fg=TEXT, bg=PANEL,
                       relief="flat", padx=16, pady=12,
                       wrap="word", cursor="arrow",
-                      yscrollcommand=sb.set,
+                      selectbackground="#2b5f45", selectforeground="white",
                       state="normal")
         txt.pack(side="left", fill="both", expand=True)
-        sb.config(command=txt.yview)
         txt.bind("<MouseWheel>", lambda e: txt.yview_scroll(int(-1*(e.delta/120)), "units"))
+
+        def _sync_thumb(first, last):
+            try:
+                first = float(first); last = float(last)
+                h = body.winfo_height()
+                if h <= 0 or last - first >= 0.999:
+                    if sb_vis[0]:
+                        sb_thumb.place_forget()
+                        sb_vis[0] = False
+                    return
+                if not sb_vis[0]:
+                    sb_vis[0] = True
+                thumb_h = max(24, int(h * (last - first)))
+                thumb_y = int(h * first)
+                sb_thumb.place(x=1, y=thumb_y, width=8, height=thumb_h)
+            except Exception:
+                pass
+
+        txt.configure(yscrollcommand=_sync_thumb)
+        drag = {"y": None, "first": 0.0}
+        def _sp(e):
+            drag["y"] = e.y_root
+            drag["first"] = txt.yview()[0]
+        def _sm(e):
+            if drag["y"] is None:
+                return
+            dy = e.y_root - drag["y"]
+            h = max(1, body.winfo_height())
+            txt.yview_moveto(max(0.0, min(1.0, drag["first"] + dy / h)))
+        def _sr(e):
+            drag["y"] = None
+        sb_thumb.bind("<ButtonPress-1>", _sp)
+        sb_thumb.bind("<B1-Motion>", _sm)
+        sb_thumb.bind("<ButtonRelease-1>", _sr)
+        sb_thumb.bind("<Enter>", lambda e: sb_thumb.config(bg=SB_ACTIVE))
+        sb_thumb.bind("<Leave>", lambda e: sb_thumb.config(bg=SB_THUMB))
+        body.bind("<Configure>", lambda e: _sync_thumb(*txt.yview()))
 
         def _h(t, bold=False, color=None, size=9):
             tag = f"tag_{id(t)}"
@@ -2300,8 +2578,9 @@ class SettingsWin(tk.Toplevel):
                  fg=TEXT, bg=BG, width=28, anchor="w").pack(side="left")
         pos_cb = ttk.Combobox(f_pos, textvariable=self._v_ovpos,
                               values=["top-left","top-right","bottom-left",
-                                      "bottom-right","center","custom"],
-                              state="readonly", width=14, font=("Segoe UI",9))
+                                       "bottom-right","center","custom"],
+                              state="readonly", width=14, font=("Segoe UI",9),
+                              style="Knob.TCombobox")
         pos_cb.pack(side="left")
         pos_cb.bind("<<ComboboxSelected>>", _on_ovpos)
         tk.Label(sc, text="Drag the popup to move it. Position changes to Custom automatically.",
@@ -2363,6 +2642,7 @@ class SettingsWin(tk.Toplevel):
             dlg.resizable(False, False)
             dlg.grab_set()
             dlg.protocol("WM_DELETE_WINDOW", dlg.destroy)
+            _place_near_parent(dlg, self, side="left")
 
             tk.Label(dlg, text="Describe the issue:",
                      font=("Segoe UI",9), fg=TEXT, bg=BG).pack(padx=20, pady=(16,4), anchor="w")
@@ -2383,8 +2663,16 @@ class SettingsWin(tk.Toplevel):
 
             def _send():
                 msg = txt.get("1.0","end").strip()
-                if not msg:
-                    status_lbl.config(text="Please describe the issue first.", fg="#ff6b6b")
+                ok, err = _report_validate_message(msg)
+                if not ok:
+                    status_lbl.config(text=err, fg="#ff6b6b")
+                    return
+                if not _report_endpoint():
+                    status_lbl.config(text="Bug reporting is not available right now.", fg="#ff6b6b")
+                    return
+                ok, err = _report_can_send(msg)
+                if not ok:
+                    status_lbl.config(text=err, fg="#ff6b6b")
                     return
                 # Read crash log
                 crash_log = APPDATA_DIR / "crash.log"
@@ -2392,7 +2680,7 @@ class SettingsWin(tk.Toplevel):
                 try:
                     if crash_log.exists():
                         raw = crash_log.read_text(encoding="utf-8", errors="replace")
-                        log_text = raw[-5000:] if len(raw) > 5000 else raw
+                        log_text = raw[-_REPORT_LOG_MAX_CHARS:] if len(raw) > _REPORT_LOG_MAX_CHARS else raw
                 except: pass
 
                 send_btn.config(state="disabled", text="Sending…")
@@ -2401,6 +2689,7 @@ class SettingsWin(tk.Toplevel):
                 def _do_send():
                     import urllib.request, json
                     payload = {
+                        "id":      _get_install_id(),
                         "version": APP_VER,
                         "os":      platform.version()[:40],
                         "message": msg,
@@ -2408,13 +2697,14 @@ class SettingsWin(tk.Toplevel):
                     }
                     try:
                         req = urllib.request.Request(
-                            ANALYTICS_URL.replace("/ping", "/report"),
+                            _report_endpoint(),
                             data=json.dumps(payload).encode(),
                             headers={"Content-Type":"application/json",
                                      "User-Agent":f"KnobMixer/{APP_VER}"},
                             method="POST"
                         )
                         urllib.request.urlopen(req, timeout=8)
+                        _mark_report_sent(msg)
                         def _on_success():
                             try:
                                 status_lbl.config(text="Report sent. Thank you!", fg="#1DB954")
@@ -2458,17 +2748,17 @@ class SettingsWin(tk.Toplevel):
                  wraplength=420, justify="left").pack(padx=16, pady=(4,6), anchor="w")
         f_reset = tk.Frame(sc, bg=BG); f_reset.pack(fill="x", padx=16, pady=(0,8))
         def _reset_all():
-            import tkinter.messagebox as _mb
-            if not _mb.askyesno("Reset All Settings",
+            if not _themed_confirm(
+                    self, "Reset All Settings",
                     "This will reset KnobMixer to factory defaults.\n"
                     "All groups, hotkeys, and settings will be cleared.\n\n"
                     "The app will restart. Continue?",
-                    parent=self): return
+                    yes_text="Reset", danger=True): return
             try:
                 if CONFIG_FILE.exists():
                     CONFIG_FILE.unlink()
             except Exception as e:
-                _mb.showerror("Error", f"Could not reset settings:\n{e}", parent=self)
+                _themed_alert(self, "Error", f"Could not reset settings:\n{e}")
                 return
             # Close settings window first so it doesn't interfere with quit
             self.destroy()
@@ -2525,13 +2815,7 @@ class SettingsWin(tk.Toplevel):
                  font=("Segoe UI", 8), fg=SUBTEXT, bg=BG,
                  justify="left").pack(padx=16, pady=(0,6), anchor="w")
         self._row(sc, "Revert after (seconds)",
-                  lambda p: tk.Spinbox(p, from_=5, to=600,
-                                       textvariable=self._v_sto,
-                                       width=10, font=("Segoe UI", 9),
-                                       bg=PANEL, fg=TEXT,
-                                       buttonbackground=BORDER,
-                                       highlightthickness=0, relief="flat",
-                                       command=self._apply).pack(side="left"))
+                  lambda p: self._single_timeout_spin(p))
 
         # Hardware Knob is controlled from the main window — not duplicated here
         self._v_hw_en = tk.BooleanVar(value=self.cfg.get("hw_knob_enabled", False))
@@ -2566,13 +2850,17 @@ class SettingsWin(tk.Toplevel):
         dev_cb = ttk.Combobox(f_dev, textvariable=self._v_micdev,
                               values=_mic_devs,
                               width=max(22, _max_w + 2),
-                              font=("Segoe UI", 9))
+                              font=("Segoe UI", 9), style="Knob.TCombobox")
         dev_cb.pack(side="left")
         dev_cb.bind("<<ComboboxSelected>>", lambda e: self._apply())
 
         # Mic hotkey
         cur_hk = self.cfg.get("mic_hotkey", "f9")
         def _hk_cb(hk):
+            ok, msg = _validate_hotkey_choice(self.cfg, hk, ("mic",))
+            if not ok:
+                _themed_alert(self, "Hotkey already in use", msg)
+                return
             self._v_michk.set(hk)
             self._apply()
         f_hk = tk.Frame(sc, bg=BG)
@@ -2600,9 +2888,10 @@ class SettingsWin(tk.Toplevel):
         tk.Label(f_micpos, text="Icon position", font=("Segoe UI",9),
                  fg=TEXT, bg=BG, width=28, anchor="w").pack(side="left")
         micpos_cb = ttk.Combobox(f_micpos, textvariable=self._v_micpos,
-                                  values=["top-left","top-right","bottom-left",
-                                          "bottom-right","center","custom"],
-                                  state="readonly", width=14, font=("Segoe UI",9))
+                                   values=["top-left","top-right","bottom-left",
+                                           "bottom-right","center","custom"],
+                                   state="readonly", width=14, font=("Segoe UI",9),
+                                   style="Knob.TCombobox")
         micpos_cb.pack(side="left")
         micpos_cb.bind("<<ComboboxSelected>>", _on_micpos)
         tk.Label(sc, text="Drag the icon to move it. Position changes to Custom automatically.",
@@ -2619,7 +2908,7 @@ class SettingsWin(tk.Toplevel):
                  fg=TEXT, bg=BG, width=28, anchor="w").pack(side="left")
         cb = ttk.Combobox(f_style, textvariable=self._v_micstyle,
                           values=ICON_STYLES, width=12, state="readonly",
-                          font=("Segoe UI", 9))
+                          font=("Segoe UI", 9), style="Knob.TCombobox")
         cb.pack(side="left")
         cb.bind("<<ComboboxSelected>>", lambda e: self._apply())
 
@@ -2647,6 +2936,19 @@ class SettingsWin(tk.Toplevel):
             btn.config(bg="#1a3a1a" if i == cur else BORDER,
                        fg="#1DB954" if i == cur else TEXT)
 
+    def _single_timeout_spin(self, parent):
+        sp = tk.Spinbox(parent, from_=5, to=600,
+                        textvariable=self._v_sto,
+                        width=10, font=("Segoe UI", 9),
+                        bg=PANEL, fg=TEXT,
+                        buttonbackground=BORDER,
+                        highlightthickness=0, relief="flat",
+                        command=self._apply)
+        sp.pack(side="left")
+        sp.bind("<FocusOut>", lambda e: self._apply())
+        sp.bind("<Return>", lambda e: self._apply())
+        return sp
+
     # ── Apply ────────────────────────────────────────────────────────────────
     def _get_mic_devices(self):
         """Get list of available microphone names."""
@@ -2654,6 +2956,9 @@ class SettingsWin(tk.Toplevel):
 
     def _apply(self):
         c = self.cfg
+        prev_timeout = c.get("single_timeout", 30)
+        prev_auto = c.get("single_auto_revert", False)
+        prev_hw = c.get("hw_knob_enabled", False)
         c["start_minimized"]   = self._v_startmin.get()
 
         c["show_overlay"]       = self._v_overlay.get()
@@ -2685,6 +2990,16 @@ class SettingsWin(tk.Toplevel):
             c["mic_icon_locked"] = self._v_locked.get()
         save_cfg(c)
         self.on_change()
+        if self._app_ref:
+            self._app_ref._show_saved()
+            if prev_auto != c["single_auto_revert"]:
+                self._app_ref._redraw()
+            else:
+                self._app_ref._refresh_default_buttons()
+            if prev_hw != c["hw_knob_enabled"] and c.get("mode") == "single":
+                self._app_ref._rebuild_knob_panel()
+            if ((prev_timeout != c["single_timeout"]) or (prev_auto != c["single_auto_revert"])) and c.get("mode") == "single":
+                self._app_ref._refresh_revert_timer()
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Main UI
@@ -2727,7 +3042,7 @@ class TutorialOverlay:
                       "Groups are controlled in order — the TOP group\n"
                       "is always the first one your knob controls.\n"
                       "Drag to reorder them."),
-            "target": "groups",
+            "target": "media_apps",
         },
         {
             "title": "4 — Add more groups",
@@ -2752,9 +3067,26 @@ class TutorialOverlay:
     def _get_target_widget(self, target):
         try:
             if target == "mode_bar":    return self._app._mode_bar
-            if target == "knob_panel":  return self._app._knob_panel
+            if target == "knob_panel":
+                kp = self._app._knob_panel
+                if kp.winfo_ismapped():
+                    return kp
+                if getattr(self._app, "_hw_row", None) and self._app._hw_row.winfo_ismapped():
+                    return self._app._hw_row
+                return self._app._mode_bar
             if target == "groups":      return self._app._groups_cf
             if target == "add_group":   return self._app._add_group_btn
+            if target == "media_apps":
+                for w in getattr(self._app, "_group_widgets", []):
+                    g = w.get("group")
+                    if not g or g.get("master_volume"):
+                        continue
+                    if g.get("name","").strip().lower() == "media":
+                        return w.get("apps_row")
+                for w in getattr(self._app, "_group_widgets", []):
+                    g = w.get("group")
+                    if g and not g.get("master_volume"):
+                        return w.get("apps_row")
         except: pass
         return None
 
@@ -2920,6 +3252,7 @@ class App:
         self.hk=HotkeyEngine()
         self.mic=MicCtrl()
         self._enabled=True
+        self._update_available=False
         self._active_grp=None
         self._timeout_job=None
         self._timeout_start=0
@@ -2951,6 +3284,7 @@ class App:
     # ── Window ────────────────────────────────────────────────────────────────
     def _build_win(self):
         self.root=tk.Tk()
+        _init_ttk_theme(self.root)
         self.root.title(APP_NAME)
         self.root.configure(bg=BG)
         self.root.resizable(True,True)
@@ -2979,34 +3313,36 @@ class App:
     # ── UI ────────────────────────────────────────────────────────────────────
     def _build_ui(self):
         # Header
-        hdr=tk.Frame(self.root,bg="#111118",pady=10); hdr.pack(fill="x")
-        lf=tk.Frame(hdr,bg="#111118"); lf.pack(side="left",padx=14)
-        tk.Label(lf,text="KnobMixer",font=("Segoe UI",15,"bold"),fg=TEXT,bg="#111118").pack(anchor="w")
-        tk.Label(lf,text=f"v{APP_VER}  —  Volume control for apps using knobs & hotkeys",
-                 font=("Segoe UI",8),fg=SUBTEXT,bg="#111118").pack(anchor="w")
+        hdr=tk.Frame(self.root,bg="#111118",pady=12); hdr.pack(fill="x")
+        lf=tk.Frame(hdr,bg="#111118"); lf.pack(side="left",padx=16)
+        tk.Label(lf,text="KnobMixer",font=("Segoe UI",16,"bold"),fg=TEXT,bg="#111118").pack(anchor="w")
+        tk.Label(lf,text=f"v{APP_VER}  •  Volume control for apps using knobs and hotkeys",
+                 font=("Segoe UI",8),fg=SUBTEXT,bg="#111118").pack(anchor="w", pady=(1,0))
 
-        rf=tk.Frame(hdr,bg="#111118"); rf.pack(side="right",padx=14)
-        tk.Button(rf,text="⚙",font=("Segoe UI",13),bg="#111118",fg=SUBTEXT,
-                  activebackground="#111118",activeforeground=TEXT,
+        rf=tk.Frame(hdr,bg="#111118"); rf.pack(side="right",padx=16)
+        tk.Button(rf,text="⚙",font=("Segoe UI",13),bg=BORDER,fg=SUBTEXT,
+                  width=3,
+                  activebackground=HOVER,activeforeground=TEXT,
                   relief="flat",cursor="hand2",
-                  command=self._open_settings).pack(side="right",padx=(4,0))
-        tk.Button(rf,text="?",font=("Segoe UI",11,"bold"),bg="#111118",fg=SUBTEXT,
-                  activebackground="#111118",activeforeground=TEXT,
-                  relief="flat",cursor="hand2",padx=4,
-                  command=self._start_tutorial).pack(side="right",padx=(0,2))
-        self._onoff_btn=tk.Button(rf,text="ON",font=("Segoe UI",9,"bold"),
-                                  bg="#1a3a1a",fg="#1DB954",activebackground="#2a4a2a",
-                                  relief="flat",cursor="hand2",padx=10,pady=4,
+                  command=self._open_settings).pack(side="right",padx=(6,0), ipady=2)
+        tk.Button(rf,text="?",font=("Segoe UI",11,"bold"),bg=BORDER,fg=SUBTEXT,
+                  width=3,
+                  activebackground=HOVER,activeforeground=TEXT,
+                  relief="flat",cursor="hand2",padx=0,
+                  command=self._start_tutorial).pack(side="right",padx=(0,2), ipady=2)
+        self._onoff_btn=tk.Button(rf,text="Enabled",font=("Segoe UI",9,"bold"),
+                                  bg="#183524",fg="#1DB954",activebackground="#214733",
+                                  relief="flat",cursor="hand2",padx=12,pady=5,
                                   command=self._toggle_en)
-        self._onoff_btn.pack(side="right",padx=(0,6))
+        self._onoff_btn.pack(side="right",padx=(0,8))
 
         self._update_url = [None]  # store URL for click
         # Update check button — styled like ON button, sits next to gear icon
         self._update_btn = tk.Button(
-            rf, text="Update",
-            font=("Segoe UI",8), bg=BORDER, fg=SUBTEXT,
+            rf, text="Check Updates",
+            font=("Segoe UI",8,"bold"), bg=PANEL_SOFT, fg=SUBTEXT,
             activebackground=HOVER, activeforeground=TEXT,
-            relief="flat", cursor="hand2", padx=8, pady=4,
+            relief="flat", cursor="hand2", padx=10, pady=5,
             command=self._manual_update_check)
         self._update_btn.pack(side="right", padx=(0,4))
 
@@ -3072,9 +3408,9 @@ class App:
                     cap._finish(None)
                 else:
                     clear_val(); b.config(text="—")
-            tk.Button(rf, text="✕", font=("Segoe UI",7), bg=PANEL, fg="#555",
-                      activebackground=BORDER, activeforeground="#ff6b6b",
-                      relief="flat", cursor="hand2", padx=2, pady=0,
+            tk.Button(rf, text="×", font=("Segoe UI",9,"bold"), bg=PANEL, fg="#6d7086",
+                      activebackground=PANEL, activeforeground=TEXT,
+                      relief="flat", cursor="hand2", padx=3, pady=0,
                       command=_clr).pack(side="left", padx=(1,0))
             return f
 
@@ -3082,27 +3418,38 @@ class App:
         hw = self.cfg.get("hw_knob_enabled", False)
 
         # Row 1: keys — show Vol-/Vol+/Mute only when NOT using hw knob
-        row1 = tk.Frame(kp, bg=PANEL); row1.pack(fill="x", padx=10, pady=(2,1))
+        row1 = tk.Frame(kp, bg=PANEL); row1.pack(fill="x", padx=10, pady=(4,1))
         tk.Label(row1, text="1-Knob:", font=("Segoe UI",8,"bold"), fg=SUBTEXT,
                  bg=PANEL).pack(side="left", padx=(0,8))
 
         if not hw:
             for action, lbl in [("vol_down","Vol-"), ("vol_up","Vol+"), ("mute","Mute")]:
+                def _set_single_hotkey(hk, a=action):
+                    ok, msg = _validate_hotkey_choice(self.cfg, hk, ("single_shared", a))
+                    if not ok:
+                        _themed_alert(self.root, "Hotkey already in use", msg)
+                        return
+                    self.cfg["single_keys"][a] = hk
+                    self._autosave()
                 _make_hk_cell(row1, lbl,
                               lambda a=action: sk.get(a,""),
-                              lambda hk, a=action: (self.cfg["single_keys"].__setitem__(a, hk), self._autosave()),
+                              _set_single_hotkey,
                               lambda a=action: (self.cfg["single_keys"].__setitem__(a,""), self._autosave())
                               ).pack(side="left", padx=(0,10))
 
-        def _ck_cb(hk): self.cfg["cycle_key"] = hk; self._autosave()
+        def _ck_cb(hk):
+            ok, msg = _validate_hotkey_choice(self.cfg, hk, ("cycle",))
+            if not ok:
+                _themed_alert(self.root, "Hotkey already in use", msg)
+                return
+            self.cfg["cycle_key"] = hk; self._autosave()
         def _ck_clr(): self.cfg["cycle_key"] = ""; self._autosave()
+        if hw:
+            tk.Label(row1, text="Vol keys handled by Hardware Knob",
+                     font=("Segoe UI",8), fg=SUBTEXT, bg=PANEL).pack(side="left", padx=(0,14))
         _make_hk_cell(row1, "Cycle",
                       lambda: self.cfg.get("cycle_key",""),
                       _ck_cb, _ck_clr).pack(side="left")
-        if hw:
-            tk.Label(row1,
-                     text="  Vol keys handled by Hardware Knob",
-                     font=("Segoe UI",8), fg=SUBTEXT, bg=PANEL).pack(side="left", padx=(8,0))
         # Knob panel packs after groups frame is created (see below)
         self._knob_panel_pending = self.cfg.get("mode") == "single"
 
@@ -3114,7 +3461,7 @@ class App:
         self._canvas=tk.Canvas(cf,bg=BG,highlightthickness=0,bd=0)
         # Minimal custom scrollbar: thin dark strip
         self._sb_frame=tk.Frame(cf,bg=BG,width=10)
-        self._sb_thumb=tk.Frame(self._sb_frame,bg="#4a4a70",cursor="hand2")
+        self._sb_thumb=tk.Frame(self._sb_frame,bg=SB_THUMB,cursor="hand2")
         self._sb_visible=False
         self._canvas.pack(side="left",fill="both",expand=True)
         # DON'T pack sb_frame yet — only show when needed
@@ -3169,6 +3516,8 @@ class App:
         self._sb_thumb.bind("<ButtonPress-1>",  _sb_press)
         self._sb_thumb.bind("<B1-Motion>",      _sb_move)
         self._sb_thumb.bind("<ButtonRelease-1>",_sb_release)
+        self._sb_thumb.bind("<Enter>", lambda e: self._sb_thumb.config(bg=SB_ACTIVE))
+        self._sb_thumb.bind("<Leave>", lambda e: self._sb_thumb.config(bg=SB_THUMB))
 
         self.gf.bind("<Configure>",lambda e: _update_scroll())
         self._canvas.bind("<Configure>",lambda e: (
@@ -3243,12 +3592,12 @@ class App:
         groups = self.cfg["groups"]
         moved  = False
 
-        if dy < -28 and cur > 0:
+        if dy < -18 and cur > 0:
             groups[cur], groups[cur-1] = groups[cur-1], groups[cur]
             self._drag_state["idx"]     = cur - 1
             self._drag_state["start_y"] = event.y_root
             moved = True
-        elif dy > 28 and cur < len(groups)-1:
+        elif dy > 18 and cur < len(groups)-1:
             groups[cur], groups[cur+1] = groups[cur+1], groups[cur]
             self._drag_state["idx"]     = cur + 1
             self._drag_state["start_y"] = event.y_root
@@ -3283,53 +3632,60 @@ class App:
         color=group.get("color","#888")
         mode =self.cfg.get("mode","multi")
 
-        card=tk.Frame(self.gf,bg=PANEL,highlightbackground=color,highlightthickness=2)
-        card.pack(fill="x",padx=12,pady=3)
+        outer=tk.Frame(self.gf,bg=BG)
+        outer.pack(fill="x",padx=12,pady=4)
+        accent=tk.Frame(outer,bg=color,width=4)
+        accent.pack(side="left",fill="y")
+        card=tk.Frame(outer,bg=PANEL,highlightbackground=BORDER,highlightthickness=1)
+        card.pack(side="left",fill="x",expand=True)
 
         # Row 1: handle | dot | name | ★ | ON/OFF | del
-        r1=tk.Frame(card,bg=PANEL); r1.pack(fill="x",padx=10,pady=(7,1))
+        r1=tk.Frame(card,bg=PANEL); r1.pack(fill="x",padx=10,pady=(6,2))
 
         # Drag handle — ≡ symbol, cursor changes to indicate draggable
-        handle=tk.Label(r1,text="≡",font=("Segoe UI",12),fg="#444",bg=PANEL,
+        handle=tk.Label(r1,text="≡",font=("Segoe UI",12),fg="#5b5b74",bg=PANEL,
                         cursor="sb_v_double_arrow")
-        handle.pack(side="left",padx=(0,4))
+        handle.pack(side="left",padx=(0,6))
         handle.bind("<ButtonPress-1>",  lambda e,i=idx: self._card_drag_start(e,i))
         handle.bind("<B1-Motion>",      lambda e,i=idx: self._card_drag_motion(e,i))
         handle.bind("<ButtonRelease-1>",self._card_drag_end)
 
         dot=tk.Label(r1,text="●",font=("Segoe UI",12),fg=color,bg=PANEL,cursor="hand2")
-        dot.pack(side="left")
+        dot.pack(side="left", pady=(0,1))
         dot.bind("<Button-1>",lambda e,g=group,c=card: self._pick_color(g,c))
         nv=tk.StringVar(value=group.get("name","Group"))
         ne=tk.Entry(r1,textvariable=nv,font=("Segoe UI",10,"bold"),
-                    bg=PANEL,fg=TEXT,insertbackground=TEXT,relief="flat",bd=0,width=13)
-        ne.pack(side="left",padx=6)
+                    bg=PANEL,fg=TEXT,insertbackground=TEXT,relief="flat",bd=0,width=14)
+        ne.pack(side="left",padx=7)
         ne.bind("<KeyRelease>", lambda e,g=group,v=nv: self._on_name(g,v))
         ne.bind("<Return>",    lambda e: self.root.focus_set())
         ne.bind("<Escape>",    lambda e: self.root.focus_set())
         if group.get("master_volume"):
-            tk.Label(r1,text="🔊 PC",font=("Segoe UI",7),fg="#00BCD4",
-                     bg=PANEL).pack(side="left")
+            tk.Label(r1,text="PC MASTER",font=("Segoe UI",7,"bold"),fg="#7fe4f0",
+                     bg="#173542", padx=8, pady=3).pack(side="left", padx=(0,4))
 
         tk.Button(r1,text="✕",font=("Segoe UI",8),fg=SUBTEXT,bg=PANEL,
                   activebackground=BORDER,activeforeground="#ff6b6b",
                   relief="flat",cursor="hand2",
-                  command=lambda i=idx: self._del_group(i)).pack(side="right",padx=(2,0))
+                  command=lambda i=idx: self._del_group(i)).pack(side="right",padx=(6,0))
 
-        en_btn=tk.Button(r1,text="ON" if group.get("enabled",True) else "OFF",
+        en_btn=tk.Button(r1,text="Enabled" if group.get("enabled",True) else "Disabled",
                          font=("Segoe UI",8,"bold"),bg=BORDER,
-                         fg="#1DB954" if group.get("enabled",True) else "#666",
+                         fg="#1DB954" if group.get("enabled",True) else "#8b7280",
                          activebackground=HOVER,relief="flat",cursor="hand2",padx=8,pady=1)
         en_btn.pack(side="right",padx=2)
         def _tog(g=group,b=en_btn):
             g["enabled"]=not g.get("enabled",True)
-            b.config(text="ON" if g["enabled"] else "OFF",
-                     fg="#1DB954" if g["enabled"] else "#666")
+            b.config(text="Enabled" if g["enabled"] else "Disabled",
+                     bg="#183524" if g["enabled"] else "#2a1a1a",
+                     fg="#1DB954" if g["enabled"] else "#8b7280")
+            self._ensure_single_default_group()
             self._autosave()
+        en_btn.config(bg="#183524" if group.get("enabled",True) else "#2a1a1a")
         en_btn.config(command=_tog)
 
-        if mode=="single":
-            is_def=group.get("is_default",False)
+        if mode=="single" and self.cfg.get("single_auto_revert", False):
+            is_def = (idx == self.cfg.get("single_default_group", 0))
             def_btn=tk.Button(r1,text="★" if is_def else "☆",
                               font=("Segoe UI",11),
                               fg="#FFC107" if is_def else SUBTEXT,
@@ -3337,53 +3693,58 @@ class App:
                               relief="flat",cursor="hand2")
             def_btn.pack(side="right",padx=2)
             def _set_def(g=group):
-                for gg in self.cfg["groups"]: gg["is_default"]=False
-                g["is_default"]=True
-                self.cfg["single_default_group"]=self.cfg["groups"].index(g)
-                self._autosave(); self._redraw()
+                self._set_single_default_group(g)
             def_btn.config(command=_set_def)
+        else:
+            def_btn = None
 
         # Row 2: vol% | step | mute
-        r2=tk.Frame(card,bg=PANEL); r2.pack(fill="x",padx=10,pady=(1,0))
-        vol_lbl=tk.Label(r2,text=self._vt(group),font=("Segoe UI",9,"bold"),
-                         fg=color,bg=PANEL,width=7,anchor="w")
+        r2=tk.Frame(card,bg=PANEL); r2.pack(fill="x",padx=10,pady=(0,0))
+        vol_lbl=tk.Label(r2,text=self._vt(group),font=("Segoe UI",10,"bold"),
+                         fg=color,bg=PANEL,width=8,anchor="w")
         vol_lbl.pack(side="left")
 
         step_var=tk.IntVar(value=group.get("step",5))
         def _step_chg(g=group,v=step_var): g["step"]=v.get(); self._autosave()
-        tk.Label(r2,text="step:",font=("Segoe UI",8),fg=SUBTEXT,bg=PANEL).pack(side="right",padx=(0,2))
+        tk.Label(r2,text="%",font=("Segoe UI",8),fg=SUBTEXT,bg=PANEL).pack(side="right",padx=(0,4))
         tk.Spinbox(r2,from_=1,to=25,textvariable=step_var,width=3,
-                   font=("Segoe UI",8),bg=BG,fg=TEXT,buttonbackground=BORDER,
+                   font=("Segoe UI",8),bg=INPUT_BG,fg=TEXT,buttonbackground=BORDER,
                    highlightthickness=0,relief="flat",
                    command=_step_chg).pack(side="right",padx=(0,4))
 
         mute_btn=tk.Button(r2,text="Muted" if group.get("muted") else "Mute",
-                           font=("Segoe UI",8),
+                           font=("Segoe UI",8,"bold"),
                            bg="#3a1a1a" if group.get("muted") else BORDER,
                            fg="#ff6b6b" if group.get("muted") else SUBTEXT,
-                           relief="flat",cursor="hand2",padx=6,pady=1)
-        mute_btn.pack(side="right",padx=(0,6))
+                           relief="flat",cursor="hand2",padx=8,pady=2)
+        mute_btn.pack(side="right",padx=(0,8))
         mute_btn.config(command=self._mk_mute(group,mute_btn,vol_lbl,color))
 
         # Slider
         vol_var=tk.IntVar(value=int(group.get("volume",80)))
         stn=f"G{idx}.Horizontal.TScale"
-        st=ttk.Style(); st.theme_use("clam")
-        st.configure(stn,troughcolor=BORDER,background=color,sliderlength=15,sliderrelief="flat")
+        st=ttk.Style(card)
+        try: st.theme_use("clam")
+        except Exception: pass
+        st.configure(stn,troughcolor=INPUT_BG,background=color,sliderlength=17,sliderrelief="flat")
         ttk.Scale(card,from_=0,to=100,orient="horizontal",variable=vol_var,
                   style=stn,
                   command=self._mk_slider(group,vol_var,vol_lbl,color)
-                  ).pack(fill="x",padx=10,pady=(2,4))
+                  ).pack(fill="x",padx=10,pady=(3,4))
 
         # Row 3: hotkeys with labels
         r3=tk.Frame(card,bg=PANEL); r3.pack(fill="x",padx=10,pady=(0,3))
         if mode=="multi":
             for action,label in [("vol_down","Vol-"),("vol_up","Vol+"),("mute","Vol Mute")]:
                 cur=group.get("keys",{}).get(action,"")
-                lf2=tk.Frame(r3,bg=PANEL); lf2.pack(side="left",padx=(0,6))
+                lf2=tk.Frame(r3,bg=PANEL); lf2.pack(side="left",padx=(0,8))
                 tk.Label(lf2,text=label,font=("Segoe UI",7),fg=SUBTEXT,bg=PANEL).pack(anchor="w")
                 rf2=tk.Frame(lf2,bg=PANEL); rf2.pack(anchor="w")
                 def _cb(hk,g=group,a=action):
+                    ok, msg = _validate_hotkey_choice(self.cfg, hk, ("group", g.get("id", id(g)), a))
+                    if not ok:
+                        _themed_alert(self.root, "Hotkey already in use", msg)
+                        return
                     g.setdefault("keys",{})[a]=hk
                     self.hk.reload(self.cfg,self._on_vol,self._on_switch)
                     self._autosave()
@@ -3398,32 +3759,34 @@ class App:
                         b.config(text="—")
                         self.hk.reload(self.cfg,self._on_vol,self._on_switch)
                         self._autosave()
-                tk.Button(rf2,text="✕",font=("Segoe UI",7),bg=PANEL,fg="#555",
-                          activebackground=BORDER,activeforeground="#ff6b6b",
-                          relief="flat",cursor="hand2",padx=2,pady=0,
+                tk.Button(rf2,text="×",font=("Segoe UI",9,"bold"),bg=PANEL,fg="#6d7086",
+                          activebackground=PANEL,activeforeground=TEXT,
+                          relief="flat",cursor="hand2",padx=3,pady=0,
                           command=_clr).pack(side="left",padx=(1,0))
         # 1-Knob mode: switch key removed — use Cycle key in the panel above groups
 
         # Row 4: apps (skip for master volume groups)
         if not group.get("master_volume"):
-            r4=tk.Frame(card,bg=PANEL); r4.pack(fill="x",padx=10,pady=(0,7))
-            apps_lbl=tk.Label(r4,text=self._at(group),font=("Segoe UI",8),
-                              fg=SUBTEXT,bg=PANEL,anchor="w",wraplength=420)
-            apps_lbl.pack(side="left",fill="x",expand=True)
-            tk.Button(r4,text="Edit",font=("Segoe UI",8),bg=BORDER,fg=TEXT,
-                      relief="flat",cursor="hand2",padx=6,pady=1,
-                      command=lambda g=group,l=apps_lbl:
-                              AppsDialog(self.root,g,l,self._at,self._autosave,
+            r4=tk.Frame(card,bg=PANEL); r4.pack(fill="x",padx=10,pady=(1,7))
+            apps_wrap=tk.Frame(r4,bg=PANEL)
+            apps_wrap.pack(side="left",fill="x",expand=True)
+            tk.Button(r4,text="Edit Apps",font=("Segoe UI",8,"bold"),bg=BORDER,fg=TEXT,
+                      relief="flat",cursor="hand2",padx=8,pady=3,
+                      command=lambda g=group:
+                              AppsDialog(self.root,g,self._redraw,self._autosave,
                                          all_groups=self.cfg["groups"])
                       ).pack(side="right")
+            self._render_app_chips(apps_wrap, group.get("apps", []))
         else:
             tk.Label(card,text="Controls the entire PC volume",
-                     font=("Segoe UI",8),fg="#00BCD4",bg=PANEL).pack(
-                     anchor="w",padx=10,pady=(0,7))
+                     font=("Segoe UI",8),fg="#7fe4f0",bg=PANEL).pack(
+                     anchor="w",padx=10,pady=(2,7))
 
         self._group_widgets.append({
             "vol_var":vol_var,"vol_lbl":vol_lbl,
             "mute_btn":mute_btn,"color":color,"step_var":step_var,
+            "group": group, "apps_row": r4 if not group.get("master_volume") else None,
+            "default_btn": def_btn,
         })
 
     # ── Helpers ───────────────────────────────────────────────────────────────
@@ -3431,6 +3794,24 @@ class App:
     def _at(self,g):
         if g.get("master_volume"): return ""
         apps=g.get("apps",[]); return (", ".join(apps[:6])+(f" +{len(apps)-6} more" if len(apps)>6 else "")) if apps else "No apps — click Edit to add"
+
+    def _render_app_chips(self, parent, apps):
+        for w in parent.winfo_children():
+            w.destroy()
+        if not apps:
+            tk.Label(parent, text="No apps - click Edit Apps to add",
+                     font=("Segoe UI",8), fg=SUBTEXT, bg=PANEL).pack(anchor="w")
+            return
+        row = None
+        for i, app in enumerate(apps[:6]):
+            if i % 3 == 0:
+                row = tk.Frame(parent, bg=PANEL)
+                row.pack(anchor="w", fill="x", pady=(0,3))
+            tk.Label(row, text=app, font=("Segoe UI",8),
+                     fg="#a8d4ff", bg="#152533", padx=8, pady=3).pack(side="left", padx=(0,6))
+        if len(apps) > 6:
+            tk.Label(parent, text=f"+{len(apps)-6} more",
+                     font=("Segoe UI",8), fg=SUBTEXT, bg=PANEL).pack(anchor="w")
 
     def _mk_slider(self,group,vol_var,lbl,color):
         def _cmd(val):
@@ -3467,6 +3848,7 @@ class App:
             "apps":[],"foreground_mode":False,"keys":{"vol_down":"","vol_up":"","mute":""},
             "single_key":"","step":5,"volume":80,"muted":False,"_vbm":80,
             "enabled":True,"is_default":False})
+        self._ensure_single_default_group()
         self._autosave(); self._redraw()
 
     def _update_master_vol_btn(self):
@@ -3488,14 +3870,16 @@ class App:
             "single_key":"","step":5,"volume":80,"muted":False,"_vbm":80,
             "enabled":True,"is_default":False,
         })
+        self._ensure_single_default_group()
         self._autosave(); self._redraw()
 
     def _del_group(self,idx):
         if len(self.cfg["groups"])<=1:
-            messagebox.showwarning("KnobMixer","Need at least one group.",parent=self.root); return
+            _themed_alert(self.root, "KnobMixer", "Need at least one group.")
+            return
         name=self.cfg["groups"][idx].get("name","Group")
-        if messagebox.askyesno("Delete",f'Delete "{name}"?',parent=self.root):
-            self.cfg["groups"].pop(idx); self._autosave(); self._redraw()
+        if _themed_confirm(self.root, "Delete Group", f'Delete "{name}"?', yes_text="Delete", danger=True):
+            self.cfg["groups"].pop(idx); self._ensure_single_default_group(); self._autosave(); self._redraw()
 
     # ── Mode ──────────────────────────────────────────────────────────────────
     def _rebuild_knob_panel(self):
@@ -3513,31 +3897,43 @@ class App:
                 cap = getattr(b, "_capture", None)
                 if cap and cap._active: cap._finish(None)
                 else: clear_val(); b.config(text="—")
-            tk.Button(rf, text="✕", font=("Segoe UI",7), bg=PANEL, fg="#555",
-                      activebackground=BORDER, activeforeground="#ff6b6b",
-                      relief="flat", cursor="hand2", padx=2, pady=0,
+            tk.Button(rf, text="×", font=("Segoe UI",9,"bold"), bg=PANEL, fg="#6d7086",
+                      activebackground=PANEL, activeforeground=TEXT,
+                      relief="flat", cursor="hand2", padx=3, pady=0,
                       command=_clr).pack(side="left", padx=(1,0))
             return f
         sk = self.cfg.setdefault("single_keys", {"vol_down":"","vol_up":"","mute":""})
         hw = self.cfg.get("hw_knob_enabled", False)
-        row1 = tk.Frame(kp, bg=PANEL); row1.pack(fill="x", padx=10, pady=(2,1))
+        row1 = tk.Frame(kp, bg=PANEL); row1.pack(fill="x", padx=10, pady=(4,1))
         tk.Label(row1, text="1-Knob:", font=("Segoe UI",8,"bold"), fg=SUBTEXT,
                  bg=PANEL).pack(side="left", padx=(0,8))
         if not hw:
             for action, lbl in [("vol_down","Vol-"), ("vol_up","Vol+"), ("mute","Mute")]:
+                def _set_single_hotkey(hk, a=action):
+                    ok, msg = _validate_hotkey_choice(self.cfg, hk, ("single_shared", a))
+                    if not ok:
+                        _themed_alert(self.root, "Hotkey already in use", msg)
+                        return
+                    self.cfg["single_keys"][a] = hk
+                    self._autosave()
                 _make_hk_cell(row1, lbl,
                               lambda a=action: sk.get(a,""),
-                              lambda hk, a=action: (self.cfg["single_keys"].__setitem__(a, hk), self._autosave()),
+                              _set_single_hotkey,
                               lambda a=action: (self.cfg["single_keys"].__setitem__(a,""), self._autosave())
                               ).pack(side="left", padx=(0,10))
-        def _ck_cb(hk): self.cfg["cycle_key"] = hk; self._autosave()
+        else:
+            tk.Label(row1, text="Vol keys handled by Hardware Knob",
+                     font=("Segoe UI",8), fg=SUBTEXT, bg=PANEL).pack(side="left", padx=(0,14))
+        def _ck_cb(hk):
+            ok, msg = _validate_hotkey_choice(self.cfg, hk, ("cycle",))
+            if not ok:
+                _themed_alert(self.root, "Hotkey already in use", msg)
+                return
+            self.cfg["cycle_key"] = hk; self._autosave()
         def _ck_clr(): self.cfg["cycle_key"] = ""; self._autosave()
         _make_hk_cell(row1, "Cycle",
                       lambda: self.cfg.get("cycle_key",""),
                       _ck_cb, _ck_clr).pack(side="left")
-        if hw:
-            tk.Label(row1, text="  Vol keys handled by Hardware Knob",
-                     font=("Segoe UI",8), fg=SUBTEXT, bg=PANEL).pack(side="left", padx=(8,0))
 
     def _on_mode(self):
         mode = self._mode_var.get()
@@ -3564,6 +3960,7 @@ class App:
         self._autosave()
 
     def _init_single(self):
+        self._ensure_single_default_group()
         # Active group = first enabled group in list (user controls order by dragging)
         gs=self.cfg["groups"]
         enabled=[g for g in gs if g.get("enabled",True)]
@@ -3600,6 +3997,7 @@ class App:
                 self.root.after(0, self._tick)
 
     def _revert_default(self):
+        self._ensure_single_default_group()
         idx=self.cfg.get("single_default_group",0); gs=self.cfg["groups"]
         if gs:
             self._active_grp=gs[min(idx,len(gs)-1)]
@@ -3613,10 +4011,59 @@ class App:
         self._timeout_lbl.config(text=f"Reverts in {int(remain)}s")
         if remain>0: self.root.after(1000,self._tick)
 
+    def _refresh_revert_timer(self):
+        if self.cfg.get("mode", "multi") != "single":
+            self._timeout_lbl.config(text="")
+            return
+        if not self.cfg.get("single_auto_revert", False):
+            if self._timeout_job:
+                self.root.after_cancel(self._timeout_job)
+                self._timeout_job = None
+            self._timeout_lbl.config(text="")
+            return
+        if self._active_grp:
+            self._on_switch(self._active_grp)
+
     def _update_active_lbl(self):
         if self._active_grp:
             self._active_lbl.config(text=f"Active: {self._active_grp['name']}",
                                     fg=self._active_grp.get("color","#1DB954"))
+    def _ensure_single_default_group(self):
+        gs = self.cfg.get("groups", [])
+        if not gs:
+            self.cfg["single_default_group"] = 0
+            return
+        idx = int(self.cfg.get("single_default_group", 0))
+        if 0 <= idx < len(gs) and gs[idx].get("enabled", True):
+            return
+        for i, g in enumerate(gs):
+            if g.get("enabled", True):
+                self.cfg["single_default_group"] = i
+                return
+        self.cfg["single_default_group"] = 0
+
+    def _refresh_default_buttons(self):
+        active = self.cfg.get("single_auto_revert", False) and self.cfg.get("mode") == "single"
+        idx = self.cfg.get("single_default_group", 0)
+        for i, w in enumerate(getattr(self, "_group_widgets", [])):
+            btn = w.get("default_btn")
+            if not btn:
+                continue
+            btn.config(text="★" if active and i == idx else "☆",
+                       fg="#FFC107" if active and i == idx else SUBTEXT)
+
+    def _set_single_default_group(self, group):
+        try:
+            self.cfg["single_default_group"] = self.cfg["groups"].index(group)
+        except ValueError:
+            return
+        self._ensure_single_default_group()
+        self._autosave()
+        self._refresh_default_buttons()
+
+    def _show_saved(self):
+        self._dirty_lbl.config(text="✓ Saved")
+        self.root.after(1500,lambda: self._dirty_lbl.config(text=""))
 
     # ── Global on/off ─────────────────────────────────────────────────────────
     def set_update_available(self, ver, url):
@@ -3626,8 +4073,8 @@ class App:
         self._update_url[0] = url
         self._update_ver    = ver
         self._update_btn.config(
-            text=f"v{ver} available — click to update",
-            bg="#1a3a1a", fg="#1DB954",
+            text=f"Update v{ver}",
+            bg="#2f2414", fg="#ffb066",
             command=self._download_and_install)
 
     def _download_and_install(self):
@@ -3704,7 +4151,7 @@ class App:
                                 command=lambda: None)  # disable while checking
         def _reset():
             if self._update_btn.winfo_exists():
-                self._update_btn.config(text="Update", fg=SUBTEXT, bg=BORDER,
+                self._update_btn.config(text="Check Updates", fg=SUBTEXT, bg=PANEL_SOFT,
                                         command=self._manual_update_check)
         def _on_version(ver, url):
             if ver and _ver_tuple(ver) > _ver_tuple(APP_VER):
@@ -3712,7 +4159,7 @@ class App:
             elif ver:
                 # Up to date — show for 30s then reset
                 self.root.after(0, lambda: self._update_btn.config(
-                    text="Up to date ✓", fg=SUBTEXT, bg=BORDER))
+                    text="Up to date ✓", fg="#8acfa8", bg="#1d3126"))
                 self.root.after(30000, _reset)
             else:
                 # No connection — show clearly for 30s then reset
@@ -3724,14 +4171,17 @@ class App:
     def _toggle_en(self):
         self._enabled=not self._enabled
         if self._enabled:
-            self._onoff_btn.config(text="ON",bg="#1a3a1a",fg="#1DB954")
+            self._onoff_btn.config(text="Enabled",bg="#183524",fg="#1DB954")
             self.hk.reload(self.cfg,self._on_vol,self._on_switch)
             self._reg_mic_hk()
         else:
-            self._onoff_btn.config(text="OFF",bg="#2a1a1a",fg="#555")
+            self._onoff_btn.config(text="Disabled",bg="#2a1a1a",fg="#8b7280")
             self.hk.stop()
         self.overlay.set_enabled(self._enabled)
-        try: self.tray.icon=make_tray_img(self.cfg["groups"],self._enabled,mic_muted=self.mic.get() if self.cfg.get("mic_enabled") else None)
+        try: self.tray.icon=make_tray_img(
+            self.cfg["groups"], self._enabled,
+            mic_muted=self.mic.get() if self.cfg.get("mic_enabled") else None,
+            update_available=self._update_available)
         except: pass
 
     # ── Mic ───────────────────────────────────────────────────────────────────
@@ -3758,7 +4208,8 @@ class App:
         try:
             mic_muted = self.mic.get() if self.cfg.get("mic_enabled") else None
             self.tray.icon = make_tray_img(
-                self.cfg["groups"], self._enabled, mic_muted=mic_muted)
+                self.cfg["groups"], self._enabled,
+                mic_muted=mic_muted, update_available=self._update_available)
         except Exception:
             pass
 
@@ -3788,7 +4239,7 @@ class App:
         # Only sync UI when window is actually visible — saves CPU when in tray
         if self.root.winfo_viewable():
             self._sync()
-        self.root.after(500, self._refresh_loop)
+        self.root.after(1000, self._refresh_loop)
 
     def _sync_mute_states(self):
         """On startup, clear any saved mute state for per-app groups.
@@ -3812,7 +4263,7 @@ class App:
             _HOOK._running = False
             _HOOK.start()
             self.hk.reload(self.cfg, self._on_vol, self._on_switch)
-        self.root.after(3000, self._hook_health_check)
+        self.root.after(10000, self._hook_health_check)
 
     # ── Autosave ──────────────────────────────────────────────────────────────
     def _autosave(self):
@@ -3825,9 +4276,7 @@ class App:
         self.hk.reload(self.cfg,self._on_vol,self._on_switch)
         self._reg_mic_hk()
         if self.mic_ov: self.mic_ov.update()
-
-        self._dirty_lbl.config(text="✓ Saved")
-        self.root.after(1500,lambda: self._dirty_lbl.config(text=""))
+        self._show_saved()
 
     # ── Settings ──────────────────────────────────────────────────────────────
     def _settings_open(self):
@@ -3862,7 +4311,10 @@ class App:
 
     # ── Tray ─────────────────────────────────────────────────────────────────
     def _setup_tray(self):
-        img=make_tray_img(self.cfg["groups"],self._enabled,mic_muted=self.mic.get() if self.cfg.get("mic_enabled") else None,update_available=False)
+        img=make_tray_img(
+            self.cfg["groups"], self._enabled,
+            mic_muted=self.mic.get() if self.cfg.get("mic_enabled") else None,
+            update_available=self._update_available)
         menu=pystray.Menu(
             pystray.MenuItem("Open KnobMixer",self._show,default=True),
             pystray.Menu.SEPARATOR,
@@ -3916,7 +4368,7 @@ class App:
             if ver and _ver_tuple(ver) > _ver_tuple(APP_VER):
                 self.root.after(0, lambda: self.set_update_available(ver, url))
         _update_callback = _on_update
-        self.root.after(3000, self._hook_health_check)
+        self.root.after(10000, self._hook_health_check)
         self.root.after(2000, self._sync_mute_states)
         # Mark hotkeys as active after startup — prevents spurious overlay shows
         self.root.after(1000, lambda: setattr(self, "_hotkeys_active", True))
@@ -3941,11 +4393,10 @@ class AppsDialog(tk.Toplevel):
     - Middle: manual add field
     - Bottom: all open apps (with/without sound) as quick-add buttons
     """
-    def __init__(self, parent, group, apps_lbl, summary_fn, save_fn, all_groups=None):
+    def __init__(self, parent, group, refresh_ui, save_fn, all_groups=None):
         super().__init__(parent)
         self.group      = group
-        self.apps_lbl   = apps_lbl
-        self.summary_fn = summary_fn
+        self.refresh_ui = refresh_ui
         self.save_fn    = save_fn
         self.all_groups = all_groups or []  # for duplicate detection (#9)
         # Working copy of apps — edit in memory, save on Save
@@ -3956,6 +4407,7 @@ class AppsDialog(tk.Toplevel):
         self.resizable(True, True)
         self.grab_set()
         self._build()
+        _place_near_parent(self, parent, side="left")
 
     def _build(self):
         # ── Section 1: Added apps (top, expandable) ──────────────────────────
@@ -3971,8 +4423,9 @@ class AppsDialog(tk.Toplevel):
         added_outer.pack(fill="both", expand=True, padx=12, pady=(0,4))
         self._added_canvas = tk.Canvas(added_outer, bg=PANEL,
                                        highlightthickness=0, height=140)
-        added_sb = tk.Scrollbar(added_outer, orient="vertical",
-                                command=self._added_canvas.yview)
+        added_sb = ttk.Scrollbar(added_outer, orient="vertical",
+                                 style="Knob.Vertical.TScrollbar",
+                                 command=self._added_canvas.yview)
         self._added_canvas.configure(yscrollcommand=added_sb.set)
         self._added_canvas.pack(side="left", fill="both", expand=True)
         added_sb.pack(side="right", fill="y")
@@ -4018,8 +4471,9 @@ class AppsDialog(tk.Toplevel):
         open_outer.pack(fill="x", padx=12, pady=(0,4))
         self._open_canvas = tk.Canvas(open_outer, bg=PANEL,
                                       highlightthickness=0, height=120)
-        open_sb = tk.Scrollbar(open_outer, orient="vertical",
-                               command=self._open_canvas.yview)
+        open_sb = ttk.Scrollbar(open_outer, orient="vertical",
+                                style="Knob.Vertical.TScrollbar",
+                                command=self._open_canvas.yview)
         self._open_canvas.configure(yscrollcommand=open_sb.set)
         self._open_canvas.pack(side="left", fill="both", expand=True)
         open_sb.pack(side="right", fill="y")
@@ -4132,6 +4586,7 @@ class AppsDialog(tk.Toplevel):
                         dlg.resizable(False, False)
                         dlg.grab_set()
                         dlg.protocol("WM_DELETE_WINDOW", dlg.destroy)
+                        _place_near_parent(dlg, self, side="left")
                         tk.Label(dlg, text=f"'{n}' is already in another group.\n"
                                             "Adding it here may cause conflicts.",
                                  font=("Segoe UI",9), fg=TEXT, bg=BG,
@@ -4168,7 +4623,7 @@ class AppsDialog(tk.Toplevel):
 
     def _save(self):
         self.group["apps"] = list(self._apps)
-        self.apps_lbl.config(text=self.summary_fn(self.group))
+        self.refresh_ui()
         self.save_fn()
         self.grab_release()
         self.destroy()
@@ -4223,7 +4678,7 @@ def _stamp_ping_today():
 def _ping_analytics(cfg=None):
     """Daily analytics ping with exponential backoff retry.
     Handles offline-at-launch then reconnect — like Steam/Discord do it."""
-    if cfg and not cfg.get("analytics_enabled", True): return
+    if not cfg or not cfg.get("analytics_enabled", True): return
     if not ANALYTICS_URL: return
     if not _should_ping_today(): return
 
@@ -4244,11 +4699,6 @@ def _ping_analytics(cfg=None):
             )
             urllib.request.urlopen(req, timeout=5)
             _stamp_ping_today()  # only stamp on success (#3)
-            # Trigger update check — but only if the weekly check hasn't run yet.
-            # Without this guard the check fires every day (each ping success),
-            # causing "update available" to show even on the current version.
-            if UPDATE_CHECK and _should_check_update_this_week():
-                _fetch_latest_version(_update_callback, auto=True)
         except Exception:
             # Non-blocking retry with threading.Timer (#10)
             # Retry schedule: 15s, 1min, 5min, 15min, 1hr
@@ -4278,11 +4728,15 @@ def _fetch_latest_version(callback, auto=False, attempt=0):
             data = json.loads(urllib.request.urlopen(req, timeout=4).read())
             # 404 = no releases yet → treat as "no update"
             if data.get("message") == "Not Found":
+                if auto:
+                    _stamp_update_check_today()
                 callback(APP_VER, "")   # same version = up to date
                 return
             latest = data.get("tag_name","").lstrip("v")
             dl_url = data.get("html_url",
                               f"https://github.com/{GITHUB_REPO}/releases/latest")
+            if auto:
+                _stamp_update_check_today()
             callback(latest or APP_VER, dl_url)
         except Exception:
             if auto:
@@ -4298,19 +4752,25 @@ def _fetch_latest_version(callback, auto=False, attempt=0):
                 callback(None, None)
     threading.Thread(target=_run, daemon=True).start()
 
-def _should_check_update_this_week():
-    """Returns True once per week — so the auto check isn't every single launch."""
+def _should_check_update_today():
+    """Returns True once per day so update badges stay fresh without spamming checks."""
     import datetime
     stamp_file = APPDATA_DIR / "last_update_check"
     today      = datetime.date.today()
     if stamp_file.exists():
         try:
             last = datetime.date.fromisoformat(stamp_file.read_text().strip())
-            if (today - last).days < 7:
+            if last == today:
                 return False
         except: pass
-    stamp_file.write_text(today.isoformat())
     return True
+
+def _stamp_update_check_today():
+    import datetime
+    try:
+        (APPDATA_DIR / "last_update_check").write_text(datetime.date.today().isoformat())
+    except Exception:
+        pass
 
 if __name__=="__main__":
     # ── Single instance check ─────────────────────────────────────────────────
@@ -4332,10 +4792,10 @@ if __name__=="__main__":
         ctypes.windll.user32.EnumWindows(WNDENUMPROC(_enum), 0)
         raise SystemExit(0)
 
-    _ping_analytics()
     app = App()
-    # Weekly silent update check — no popups, just updates the button label
-    if _should_check_update_this_week():
+    _ping_analytics(app.cfg)
+    # Daily silent update check — no popups, just updates the tray badge/button
+    if _should_check_update_today():
         def _on_version(ver, url):
             if ver and _ver_tuple(ver) > _ver_tuple(APP_VER):
                 app.root.after(0, lambda: app.set_update_available(ver, url))
