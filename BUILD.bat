@@ -25,6 +25,15 @@ if errorlevel 1 (
 )
 echo  [OK] Python found.
 
+:: Extract app version from knob_mixer.py so release version only lives in one place
+set "APP_VER="
+for /f "tokens=3" %%V in ('findstr /B "APP_VER" knob_mixer.py') do set "APP_VER=%%~V"
+if "%APP_VER%"=="" (
+    echo  [!] Could not read APP_VER from knob_mixer.py
+    pause & exit /b 1
+)
+echo  [OK] Version detected: %APP_VER%
+
 :: ── Install packages ─────────────────────────────────────────────────────────
 echo  Installing packages...
 python -m pip install pyinstaller pycaw comtypes keyboard pystray Pillow psutil -q
@@ -67,7 +76,7 @@ if %ISCC%=="" (
 
 echo  Building installer...
 mkdir dist_installer 2>nul
-%ISCC% KnobMixer.iss
+%ISCC% /DMyAppVersion=%APP_VER% KnobMixer.iss
 if errorlevel 1 ( echo  [!] Installer failed. & pause & exit /b 1 )
 
 echo.
