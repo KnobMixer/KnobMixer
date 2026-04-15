@@ -87,3 +87,6 @@ KnobMixer works with any hotkey combination — keyboard shortcuts, stream deck 
 **Free. No ads. No login. Open source.**
 
 [Report a bug](https://github.com/KnobMixer/KnobMixer/issues) · [Releases](https://github.com/KnobMixer/KnobMixer/releases)
+
+
+[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/knobmixer)
