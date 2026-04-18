@@ -13,6 +13,7 @@ Control the volume of individual apps independently. Turn one knob for your game
 **Requires:** Windows 10 or 11 (64-bit)
 
 ---
+If you need help setting up your hotkeys, follow the setup guide below.
 
 ## Setup (Takes 1-2 minutes)
 
