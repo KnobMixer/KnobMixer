@@ -85,7 +85,7 @@ KnobMixer works with any hotkey combination — keyboard shortcuts, stream deck 
 
 ---
 
-**Free. No ads. No login. Open source.**
+**License:** Business Source License 1.1 — free for personal use. Commercial use or competing products require written permission.
 
 [Report a bug](https://github.com/KnobMixer/KnobMixer/issues) · [Releases](https://github.com/KnobMixer/KnobMixer/releases)
 
