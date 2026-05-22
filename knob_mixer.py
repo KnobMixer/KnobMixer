@@ -5387,9 +5387,17 @@ def _utc_day():
     return datetime.datetime.now(datetime.timezone.utc).date().isoformat()
 
 def _should_ping_day(day=None):
-    """Return True if we haven't successfully pinged analytics for this UTC day yet."""
+    """Return True if we haven't successfully pinged analytics for this UTC day yet,
+    OR if the app version changed since the last ping (catches same-day upgrades)."""
     stamp_file = APPDATA_DIR / "last_ping"
+    ver_file   = APPDATA_DIR / "last_ping_version"
     day = day or _utc_day()
+    # Always ping if version changed since last successful ping
+    try:
+        if ver_file.exists() and ver_file.read_text().strip() != APP_VER:
+            return True
+    except:
+        pass
     if stamp_file.exists():
         try:
             if stamp_file.read_text().strip() == day:
@@ -5399,9 +5407,11 @@ def _should_ping_day(day=None):
     return True
 
 def _stamp_ping_day(day):
-    """Mark a UTC day as successfully pinged without moving the stamp backward."""
+    """Mark a UTC day as successfully pinged without moving the stamp backward.
+    Also records the current version so upgrades can be detected on relaunch."""
     try:
         stamp_file = APPDATA_DIR / "last_ping"
+        ver_file   = APPDATA_DIR / "last_ping_version"
         prev = ""
         if stamp_file.exists():
             try:
@@ -5410,6 +5420,7 @@ def _stamp_ping_day(day):
                 prev = ""
         if not prev or day >= prev:
             stamp_file.write_text(day)
+        ver_file.write_text(APP_VER)
     except:
         pass
 
@@ -5447,7 +5458,9 @@ def _ping_analytics(cfg=None, event="launch"):
     if not cfg or not cfg.get("analytics_enabled", True): return
     if not ANALYTICS_URL: return
     day = _utc_day()
-    if not _should_ping_day(day): return
+    # Always send ping on launch — worker handles dedup per install ID per day.
+    # This lets us change worker-side logic without needing app updates.
+    # Version is included in payload so worker can detect upgrades.
     with _ping_lock:
         if day in _ping_pending_days:
             return
