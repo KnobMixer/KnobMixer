@@ -1,5 +1,5 @@
 """
-KnobMixer v2.7.5
+KnobMixer v2.7.6
 Free per-app volume control for keyboard knobs and hotkeys.
 https://github.com/KnobMixer/KnobMixer
 """
@@ -49,13 +49,24 @@ def _setup_crash_log():
     _orig = sys.excepthook
     def _hook(exc_type, exc_val, exc_tb):
         try:
+            # Rotate if over 1 MB — prevents unbounded growth on a
+            # chronically-crashing machine running for months.
+            try:
+                if log_file.exists() and log_file.stat().st_size > 1_000_000:
+                    old = log_dir / "crash.log.1"
+                    if old.exists():
+                        old.unlink()
+                    log_file.rename(old)
+            except Exception:
+                pass
             import datetime
             with open(log_file, "a", encoding="utf-8") as f:
                 f.write(f"\n{'='*60}\n")
                 _ver = globals().get("APP_VER", "?")
                 f.write(f"KnobMixer v{_ver} crash — {datetime.datetime.now()}\n")
                 f.write("".join(_tb.format_exception(exc_type, exc_val, exc_tb)))
-        except: pass
+        except Exception:
+            pass
         _orig(exc_type, exc_val, exc_tb)
     sys.excepthook = _hook
 
@@ -385,7 +396,12 @@ class GlobalHookManager:
                         if vk in MEDIA_VKS and not cb.get("is_media", False):
                             continue
                         if not _mods_held(cb["mods"]): continue
-                        if now - cb["last"] < cb.get("debounce", 0.02): continue
+                        if now - cb["last"] < cb.get("debounce", 0.02):
+                            # Even when debounced, keep the key suppressed so
+                            # rapid media-key repeats do not fall through to Windows.
+                            if cb["suppress"]:
+                                suppress_result = True
+                            continue
                         cb["last"] = now
                         try: cb["fn"]()
                         except Exception as e: print(f"[Hook] callback error: {e}")
@@ -437,7 +453,7 @@ _HOOK = GlobalHookManager()
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 APP_NAME    = "KnobMixer"
-APP_VER     = "2.7.5"
+APP_VER     = "2.7.6"
 APPDATA_DIR = Path(os.getenv("APPDATA",".")) / APP_NAME
 APPDATA_DIR.mkdir(parents=True, exist_ok=True)
 CONFIG_FILE = APPDATA_DIR / "config.json"
@@ -480,9 +496,9 @@ def _level_from_vol(vol):
 DEFAULT_CFG = {
     "version": 4,
     "mode": "single",
-    "start_minimized": True,
+    "start_minimized": False,  # enabled after first launch
     "show_overlay": True,
-    "tutorial_seen": False,
+    "tutorial_seen": True,   # tutorial replaced by ? button → How To tab
     "analytics_enabled": True,
     "overlay_size": 0.7,
     "overlay_position": "bottom-right",
@@ -497,6 +513,8 @@ DEFAULT_CFG = {
     "hw_knob_enabled": False,
     "hw_knob_group": 0,
     "cycle_key": "",
+    "quick_add_key_single": "",
+    "quick_add_per_card": True,
     "single_keys": {"vol_down":"","vol_up":"","mute":""},
     "mic_enabled": False,
     "mic_device": "",
@@ -510,23 +528,30 @@ DEFAULT_CFG = {
     "mic_icon_y": -1,
     "mic_icon_size": 40,
     "mic_icon_alpha": 0.85,
-    "mic_icon_style": "circle",
+    "mic_icon_style": "Ghost Hat",
     "mic_icon_locked": False,
+    "overlay_pct_x": -1, "overlay_pct_y": -1, "overlay_mon": None,
+    "mic_pct_x": -1,     "mic_pct_y": -1,     "mic_mon": None,
     "groups": [
         {"id":0,"name":"Master Volume","color":"#00BCD4",
          "apps":[],"master_volume":True,
          "keys":{"vol_down":"","vol_up":"","mute":""},
-         "single_key":"","step":5,"volume":80,"muted":False,"_vbm":80,
+         "single_key":"","quick_add_key":"","step":5,"volume":80,"muted":False,"_vbm":80,
          "foreground_mode":False,"enabled":True,"is_default":True},
         {"id":1,"name":"Media","color":"#1DB954",
-         "apps":["spotify","chrome"],
+         "apps":["chrome"],
          "keys":{"vol_down":"","vol_up":"","mute":""},
-         "single_key":"","step":5,"volume":80,"muted":False,"_vbm":80,
+         "single_key":"","quick_add_key":"","step":5,"volume":80,"muted":False,"_vbm":80,
          "foreground_mode":False,"enabled":True,"is_default":False},
         {"id":2,"name":"Chat","color":"#5865F2",
          "apps":["discord"],
          "keys":{"vol_down":"","vol_up":"","mute":""},
-         "single_key":"","step":5,"volume":80,"muted":False,"_vbm":80,
+         "single_key":"","quick_add_key":"","step":5,"volume":80,"muted":False,"_vbm":80,
+         "foreground_mode":False,"enabled":True,"is_default":False},
+        {"id":3,"name":"Game","color":"#FF6B35",
+         "apps":["cs2","forzahorizon6"],
+         "keys":{"vol_down":"","vol_up":"","mute":""},
+         "single_key":"","quick_add_key":"","step":5,"volume":80,"muted":False,"_vbm":80,
          "foreground_mode":False,"enabled":True,"is_default":False},
     ]
 }
@@ -546,7 +571,7 @@ def load_cfg():
             for g in d.get("groups",[]):
                 for k,v in [("foreground_mode",False),("_vbm",80),("color","#888"),
                              ("id",0),("step",5),("enabled",True),("is_default",False),
-                             ("single_key",""),("master_volume",False)]:
+                             ("single_key",""),("quick_add_key",""),("master_volume",False)]:
                     g.setdefault(k,v)
                 g.setdefault("keys",{})
                 for a in ("vol_down","vol_up","mute"):
@@ -557,15 +582,21 @@ def load_cfg():
                         g["keys"][a] = ""
             for k,v in [("overlay_size",0.7),("overlay_position","bottom-right"),("overlay_x",-1),("overlay_y",-1),("slowdown_enabled",True),
                         ("slowdown_threshold",10),("slowdown_step",0.5),
-                        ("single_default_group",0),("single_timeout",30),("single_auto_revert",False),("hw_knob_enabled",False),("hw_knob_group",0),("cycle_key",""),
+                        ("single_default_group",0),("single_timeout",30),("single_auto_revert",False),("hw_knob_enabled",False),("hw_knob_group",0),("cycle_key",""),("quick_add_key_single",""),("quick_add_per_card",True),
                         ("single_keys",{"vol_down":"","vol_up":"","mute":""}),
                         ("mic_enabled",False),("mic_device",""),("mic_hotkey","f9"),
                         ("mic_start_muted",False),("mic_sound_volume",0.056),
                         ("mic_sound_preset",0),("mic_position","bottom-right"),("mic_icon_x",-1),("mic_icon_y",-1),
                         ("mic_icon_size",40),("mic_icon_alpha",0.85),
-                        ("mic_icon_style","circle"),("mode","multi"),
-                        ("start_minimized",True),("show_overlay",True),("tutorial_seen",False),("analytics_enabled",True)]:
+                        ("mic_icon_style","Ghost Hat"),("mode","multi"),
+                        ("start_minimized",True),("show_overlay",True),("overlay_pct_x",-1),("overlay_pct_y",-1),("overlay_mon",None),
+                        ("mic_pct_x",-1),("mic_pct_y",-1),("mic_mon",None)]:
                 d.setdefault(k,v)
+            # 2.7.6: All users opted in. To opt out, set
+            # "analytics_enabled": false in %APPDATA%\KnobMixer\config.json
+            d["analytics_enabled"] = True
+            # 2.7.6: Tutorial replaced by ? button — mark seen for all users
+            d["tutorial_seen"] = True
             # Clamp numeric values to safe ranges
             for g in d.get("groups", []):
                 g["volume"] = max(0.0, min(100.0, float(g.get("volume", 80))))
@@ -677,9 +708,8 @@ def get_startup():
     except: return False
 
 # ── Sound engine ──────────────────────────────────────────────────────────────
-_sound_lock   = threading.Lock()
-_sound_thread = None
-_sound_cancel = threading.Event()  # set to cancel any in-progress sound immediately
+# Track previous temp WAV — deleted on next call after async playback stops
+_prev_wav_path = None
 
 def _make_wav(freq, dur_ms, vol=0.15, shape="sine"):
     sr = 22050
@@ -784,41 +814,52 @@ def _make_wav(freq, dur_ms, vol=0.15, shape="sine"):
     return out.getvalue()
 
 def play_sound(freq, dur_ms=60, vol=0.6, shape="sine"):
-    """Play sound, cancelling any currently playing sound first.
-    If called rapidly (e.g. holding hotkey), only the latest plays."""
-    global _sound_thread
+    """Play a short sound, non-blocking. A new call instantly stops any
+    sound in progress via SND_PURGE, so rapid/held-key triggers never
+    queue or stack. Temp WAV is deleted on the NEXT call after playback
+    has been stopped — never during playback (that was the old race)."""
+    global _prev_wav_path
     import winsound, tempfile
-    if dur_ms <= 0: return
-    # Cancel any in-progress sound immediately
-    _sound_cancel.set()
-    # Wait briefly for previous thread to stop (max 30ms)
-    if _sound_thread and _sound_thread.is_alive():
-        _sound_thread.join(timeout=0.03)
-    _sound_cancel.clear()
+    if dur_ms <= 0:
+        return
+
+    # 1. Stop whatever is currently playing, immediately and reliably.
+    try:
+        winsound.PlaySound(None, winsound.SND_PURGE)
+    except Exception:
+        pass
+
+    # 2. Playback is now stopped — previous temp file is safe to delete.
+    if _prev_wav_path is not None:
+        try:
+            _prev_wav_path.unlink()
+        except Exception:
+            pass
+        _prev_wav_path = None
+
+    # 3. Build the new WAV.
     data = _make_wav(freq, dur_ms, vol, shape)
-    if not data: return
+    if not data:
+        return
     try:
         tf = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
         tmp = Path(tf.name)
         tf.write(data)
         tf.close()
-    except Exception: return
-    def _play():
-        # Check cancel before starting — if another call came in, skip
-        if _sound_cancel.is_set():
-            try: tmp.unlink()
-            except: pass
-            return
-        with _sound_lock:
-            try:
-                if not _sound_cancel.is_set():
-                    winsound.PlaySound(str(tmp), winsound.SND_FILENAME)
-            finally:
-                try: tmp.unlink()
-                except: pass
-    t = threading.Thread(target=_play, daemon=True)
-    t.start()
-    _sound_thread = t
+    except Exception:
+        return
+
+    # 4. Fire-and-forget async playback. Do NOT delete the file here —
+    #    it is still being read by the audio system. Deleted on next call
+    #    or by _cleanup_temp_wavs() on next app launch.
+    try:
+        winsound.PlaySound(str(tmp), winsound.SND_FILENAME | winsound.SND_ASYNC)
+        _prev_wav_path = tmp
+    except Exception:
+        try:
+            tmp.unlink()
+        except Exception:
+            pass
 
 def play_preset(preset_idx, vol, muted):
     if preset_idx < 0 or preset_idx >= len(SOUND_PRESETS): preset_idx = 0
@@ -920,10 +961,28 @@ class HotkeyCapture:
         try: keyboard.unhook(self._on_event)
         except: pass
         if combo:
-            self._btn.after(0, lambda: self._btn.config(
-                text=fmt_hotkey(combo), bg=INPUT_BG, fg=TEXT,
-                highlightbackground=BORDER, highlightcolor=BORDER))
-            self._cb(combo)
+            result = self._cb(combo)
+            ok, msg = True, ""
+            if isinstance(result, tuple):
+                ok = bool(result[0])
+                if len(result) > 1:
+                    msg = str(result[1] or "")
+            elif isinstance(result, bool):
+                ok = result
+            if ok:
+                shown = fmt_hotkey(combo)
+                self._orig = shown
+                self._btn.after(0, lambda s=shown: self._btn.config(
+                    text=s, bg=INPUT_BG, fg=TEXT,
+                    highlightbackground=BORDER, highlightcolor=BORDER))
+            else:
+                shown = msg or "Already in use"
+                self._btn.after(0, lambda s=shown: self._btn.config(
+                    text=s, bg="#3a1a1a", fg="#ff6b6b",
+                    highlightbackground=BORDER, highlightcolor=BORDER))
+                self._btn.after(1200, lambda: self._btn.config(
+                    text=self._orig, bg=INPUT_BG, fg=TEXT,
+                    highlightbackground=BORDER, highlightcolor=BORDER))
         else:
             self._btn.after(0, lambda: self._btn.config(
                 text=self._orig, bg=INPUT_BG, fg=TEXT,
@@ -942,20 +1001,40 @@ def _iter_assigned_hotkeys(cfg):
         sk = g.get("single_key", "").strip()
         if sk:
             yield ("single_group", gid), sk
+        qk = g.get("quick_add_key", "").strip()
+        if qk:
+            yield ("quick_add", gid), qk
     for action, hk in cfg.get("single_keys", {}).items():
         if hk.strip():
             yield ("single_shared", action), hk.strip()
     ck = cfg.get("cycle_key", "").strip()
     if ck:
         yield ("cycle",), ck
+    qks = cfg.get("quick_add_key_single", "").strip()
+    if qks:
+        yield ("quick_add_single",), qks
     mh = cfg.get("mic_hotkey", "").strip()
     if mh:
         yield ("mic",), mh
 
+def _slot_domain(slot_id):
+    kind = slot_id[0] if slot_id else ""
+    if kind in ("group", "quick_add"):
+        return "multi"
+    if kind in ("single_group", "single_shared", "cycle", "quick_add_single"):
+        return "single"
+    if kind == "mic":
+        return "global"
+    return "global"
+
 def _hotkey_in_use(cfg, hotkey, slot_id):
     want = hotkey.strip().lower()
+    want_domain = _slot_domain(slot_id)
     for other_slot, other_hk in _iter_assigned_hotkeys(cfg):
         if other_slot == slot_id:
+            continue
+        other_domain = _slot_domain(other_slot)
+        if want_domain != "global" and other_domain != "global" and want_domain != other_domain:
             continue
         if other_hk.strip().lower() == want:
             return True
@@ -1002,6 +1081,27 @@ def _sessions():
         try: comtypes.CoUninitialize()  # Fix #11 — balance CoInitialize
         except: pass
     return out
+
+def _foreground_exe_for_quickadd():
+    """Foreground process name for Quick Add. Unlike _foreground_exe(), this
+    does NOT skip browsers/chat/media apps — those are valid Quick Add targets.
+    Only skips KnobMixer itself and core Windows shell/UI that can never be a
+    legitimate volume target."""
+    try:
+        hwnd = ctypes.windll.user32.GetForegroundWindow()
+        pid  = ctypes.c_ulong()
+        ctypes.windll.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        name = psutil.Process(pid.value).name().lower().removesuffix(".exe")
+        _skip = {"knobmixer", "python", "pythonw",
+                 "explorer", "searchhost", "shellexperiencehost",
+                 "startmenuexperiencehost", "applicationframehost",
+                 "systemsettings", "textinputhost", "lockapp",
+                 "cmd", "powershell", "windowsterminal", "taskmgr"}
+        if name in _skip:
+            return None
+        return name
+    except Exception:
+        return None
 
 def _foreground_exe():
     """Get the foreground window process name."""
@@ -1061,20 +1161,159 @@ def _calc_vol(current, delta, cfg):
             return min(100.0, current + fine)
     return max(0.0, min(100.0, current + delta))
 
+def _group_live_snapshot(group):
+    """Return live audio sessions for a group in the group's app order."""
+    out = []
+    try:
+        apps = list(group.get("apps", []))
+        if not apps:
+            return out
+        sess = _sessions()
+        for app in apps:
+            for vc in sess.get(app.lower(), []):
+                try:
+                    vol = float(round(vc.GetMasterVolume() * 100, 1))
+                    out.append({"app": app.lower(), "volume": vol})
+                except:
+                    pass
+    except:
+        pass
+    return out
+
+def _live_app_count(snapshot):
+    return len({item.get("app", "") for item in snapshot if item.get("app")})
+
+def _queue_apply_snapshot_plan(plan, muted=False):
+    """Apply a per-session volume plan using current live sessions."""
+    if not plan:
+        return
+    plan_map = {}
+    for app, volume in plan:
+        plan_map.setdefault(app.lower(), []).append(float(volume))
+    def _w():
+        with _audio_lock:
+            try:
+                comtypes.CoInitialize()
+                sess = _sessions()
+                for app, volumes in plan_map.items():
+                    idx = 0
+                    for vc in sess.get(app, []):
+                        if idx >= len(volumes):
+                            break
+                        try:
+                            target = 0.0 if muted else max(0.0, min(100.0, float(volumes[idx]))) / 100.0
+                            vc.SetMasterVolume(target, None)
+                        except:
+                            pass
+                        idx += 1
+            except Exception as e:
+                print(f"[apply snapshot] {e}")
+    _audio_queue_push(_w)
+
+def _clear_group_overlay_meta(group):
+    group.pop("_overlay_detail", None)
+    group.pop("_overlay_show_bar", None)
+
+def _prepare_group_overlay(group, detail=None, show_bar=True):
+    if detail is None:
+        group.pop("_overlay_detail", None)
+    else:
+        group["_overlay_detail"] = str(detail)
+    group["_overlay_show_bar"] = bool(show_bar)
+
+def _bump_group_volume(group, delta, cfg):
+    """Adjust group volume by delta. Multiple live apps move independently."""
+    if not group.get("enabled", True):
+        return
+    if group.get("muted"):
+        _toggle_group_mute(group, cfg)
+        return
+    with _cfg_lock:
+        if group.get("master_volume", False):
+            actual = _read_actual_vol(group)
+            if actual is not None and abs(actual - group.get("volume", 80)) > 3:
+                group["volume"] = actual
+            group["volume"] = _calc_vol(group.get("volume", 80), delta, cfg)
+            _clear_group_overlay_meta(group)
+            apply_vol(group, cfg)
+            return
+
+        snapshot = _group_live_snapshot(group)
+        if not snapshot:
+            group["volume"] = _calc_vol(group.get("volume", 80), delta, cfg)
+            _clear_group_overlay_meta(group)
+            apply_vol(group, cfg)
+            return
+
+        distinct_apps = _live_app_count(snapshot)
+        if distinct_apps <= 1:
+            actual = snapshot[0]["volume"]
+            if abs(actual - group.get("volume", 80)) > 3:
+                group["volume"] = actual
+            group["volume"] = _calc_vol(group.get("volume", 80), delta, cfg)
+            _clear_group_overlay_meta(group)
+            apply_vol(group, cfg)
+            return
+
+        plan = []
+        for item in snapshot:
+            plan.append((item["app"], _calc_vol(item["volume"], delta, cfg)))
+        if plan:
+            group["volume"] = float(round(plan[0][1], 1))
+        _prepare_group_overlay(group, f"{'+' if delta > 0 else ''}{int(delta)}%", False)
+        _queue_apply_snapshot_plan(plan, muted=False)
+
+def _toggle_group_mute(group, cfg):
+    """Mute/unmute a group, preserving per-app volumes when multiple apps are live."""
+    if not group.get("enabled", True):
+        return
+    with _cfg_lock:
+        if group.get("master_volume", False):
+            if group.get("muted"):
+                group["muted"] = False
+                group["volume"] = group.get("_vbm", 80)
+            else:
+                group["_vbm"] = group.get("volume", 80)
+                group["muted"] = True
+            _clear_group_overlay_meta(group)
+            apply_vol(group, cfg)
+            return
+
+        snapshot = _group_live_snapshot(group)
+        distinct_apps = _live_app_count(snapshot)
+        if group.get("muted"):
+            group["muted"] = False
+            restore_plan = group.pop("_per_app_prev", None)
+            if restore_plan:
+                group["volume"] = float(round(restore_plan[0][1], 1))
+                _clear_group_overlay_meta(group)
+                _queue_apply_snapshot_plan(restore_plan, muted=False)
+            else:
+                group["volume"] = group.get("_vbm", 80)
+                _clear_group_overlay_meta(group)
+                apply_vol(group, cfg)
+            return
+
+        group["_vbm"] = group.get("volume", 80)
+        group["muted"] = True
+        if distinct_apps > 1 and snapshot:
+            group["_per_app_prev"] = [(item["app"], item["volume"]) for item in snapshot]
+            _prepare_group_overlay(group, None, False)
+            _queue_apply_snapshot_plan(group["_per_app_prev"], muted=True)
+        else:
+            group.pop("_per_app_prev", None)
+            _clear_group_overlay_meta(group)
+            apply_vol(group, cfg)
+
 def _read_actual_vol(group):
     """Read the actual current volume of a group's apps from Windows.
     Returns 0-100 float, or None if no matching app is running."""
     try:
-        apps = group.get("apps", [])
-        if not apps: return None
-        sess = _sessions()  # _sessions() handles CoInitialize internally
-        for app in apps:
-            vcs = sess.get(app.lower(), [])
-            for vc in vcs:
-                try:
-                    vol = vc.GetMasterVolume()
-                    return float(round(vol * 100, 1))  # Fix #19 — return float
-                except: pass
+        if group.get("master_volume", False):
+            return float(group.get("volume", 80))
+        snap = _group_live_snapshot(group)
+        if snap:
+            return float(round(snap[0]["volume"], 1))
     except: pass
     return None
 
@@ -1227,26 +1466,50 @@ class MicCtrl:
     def __init__(self):
         self._muted = False
         self._lock  = threading.Lock()
+        # "Latest wins" mic apply: instead of queuing one COM op per
+        # key-repeat (which piles up and keeps firing after release),
+        # store only the most recent desired state; one worker applies it.
+        self._pending_mute    = None
+        self._apply_lock      = threading.Lock()
+        self._apply_scheduled = False
 
     def _ep(self, cfg=None):
         """Get IAudioEndpointVolume for the selected mic device.
-        If a specific device is chosen, uses that — otherwise uses Windows default.
-        This fixes HyperX and other non-default mics not being toggled."""
+        Uses AudioUtilities.GetAllDevices() to match by FriendlyName — this
+        correctly resolves HyperX, USB mics, and any non-default capture device.
+        Falls back to system default if the named device is not found."""
         comtypes.CoInitialize()
+        dev_name = (cfg or {}).get("mic_device_name", "").strip()
         try:
-            # Try selected device by friendly name first
-            dev_name = (cfg or {}).get("mic_device_name","").strip()
             if dev_name and dev_name != "System Default":
-                # Find device by name in registry and activate it
-                ep = _get_endpoint_by_name(dev_name)
-                if ep: return ep
+                # Match by FriendlyName across all active capture devices
+                try:
+                    all_devs = AudioUtilities.GetAllDevices()
+                    for dev in all_devs:
+                        try:
+                            fname = getattr(dev, "FriendlyName", None) or ""
+                            if fname.strip() == dev_name:
+                                raw = getattr(dev, "_dev", dev)
+                                iface = raw.Activate(
+                                    IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+                                ep = iface.QueryInterface(IAudioEndpointVolume)
+                                print(f"[Mic] Resolved device: {fname}")
+                                return ep
+                        except Exception:
+                            continue
+                    print(f"[Mic] Device '{dev_name}' not found — falling back to system default")
+                except Exception as e:
+                    print(f"[Mic] GetAllDevices failed ({e}) — falling back to system default")
             # Fall back to Windows default capture device
             mic = AudioUtilities.GetMicrophone()
             if mic:
                 raw = getattr(mic, "_dev", mic)
                 iface = raw.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
-                return iface.QueryInterface(IAudioEndpointVolume)
-        except: pass
+                ep = iface.QueryInterface(IAudioEndpointVolume)
+                print("[Mic] Using system default capture device")
+                return ep
+        except Exception as e:
+            print(f"[Mic] _ep failed: {e}")
         return None
 
     def sync(self, cfg=None):
@@ -1261,19 +1524,38 @@ class MicCtrl:
     def set(self, muted, cfg):
         with self._lock:
             self._muted = muted
-            def _w():
-                try:
-                    ep = self._ep(cfg)
-                    if ep:
-                        ep.SetMute(1 if muted else 0, None)
-                    else:
-                        print("[Mic] Device unavailable — state tracked, not applied")
-                except Exception as e:
-                    print(f"[Mic set] {e}")
-            _audio_queue_push(_w)
-            vol = cfg.get("mic_sound_volume", 0.056)
-            preset = cfg.get("mic_sound_preset", 0)
-            play_preset(preset, vol, muted)
+        # Record latest desired state. If an apply is already scheduled,
+        # just overwrite the target — no new queue entry needed.
+        with self._apply_lock:
+            self._pending_mute = muted
+            already = self._apply_scheduled
+            self._apply_scheduled = True
+        if not already:
+            _audio_queue_push(lambda c=cfg: self._apply_latest(c))
+        # play_sound already cancels prior playback (SND_PURGE), so rapid
+        # toggles never queue audio.
+        vol = cfg.get("mic_sound_volume", 0.056)
+        preset = cfg.get("mic_sound_preset", 0)
+        play_preset(preset, vol, muted)
+
+    def _apply_latest(self, cfg):
+        """Runs on the audio worker thread. Applies the most recent desired
+        mic state, then clears the schedule. Intermediate toggles are
+        never replayed — only the final state matters."""
+        with self._apply_lock:
+            target = self._pending_mute
+            self._pending_mute    = None
+            self._apply_scheduled = False
+        if target is None:
+            return
+        try:
+            ep = self._ep(cfg)
+            if ep:
+                ep.SetMute(1 if target else 0, None)
+            else:
+                print("[Mic] Device unavailable — state tracked, not applied")
+        except Exception as e:
+            print(f"[Mic set] {e}")
 
     def toggle(self, cfg):
         self.set(not self._muted, cfg)
@@ -1699,6 +1981,108 @@ def draw_mic_icon(style, muted, size):
 
     return img
 
+
+# ── Monitor-aware positioning helpers ────────────────────────────────────────
+def _enumerate_monitors():
+    """Return list of monitor work-area rects as dicts.
+    Uses Win32 EnumDisplayMonitors — tkinter only knows the primary monitor."""
+    import ctypes
+    monitors = []
+
+    class RECT(ctypes.Structure):
+        _fields_ = [("left", ctypes.c_long), ("top", ctypes.c_long),
+                    ("right", ctypes.c_long), ("bottom", ctypes.c_long)]
+
+    class MONITORINFO(ctypes.Structure):
+        _fields_ = [("cbSize", ctypes.c_ulong), ("rcMonitor", RECT),
+                    ("rcWork", RECT), ("dwFlags", ctypes.c_ulong)]
+
+    MONITORENUMPROC = ctypes.WINFUNCTYPE(
+        ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p,
+        ctypes.POINTER(RECT), ctypes.c_double)
+
+    def _cb(hMonitor, hdc, lprc, dwData):
+        mi = MONITORINFO()
+        mi.cbSize = ctypes.sizeof(MONITORINFO)
+        if ctypes.windll.user32.GetMonitorInfoW(hMonitor, ctypes.byref(mi)):
+            r = mi.rcWork  # work area excludes taskbar — correct for popups
+            monitors.append({
+                "left": r.left, "top": r.top,
+                "right": r.right, "bottom": r.bottom,
+                "width": r.right - r.left, "height": r.bottom - r.top,
+            })
+        return 1
+
+    try:
+        ctypes.windll.user32.EnumDisplayMonitors(
+            None, None, MONITORENUMPROC(_cb), 0)
+    except Exception:
+        pass
+    if not monitors:
+        # Fallback: single primary monitor
+        sw = ctypes.windll.user32.GetSystemMetrics(0)
+        sh = ctypes.windll.user32.GetSystemMetrics(1)
+        monitors.append({"left": 0, "top": 0, "right": sw, "bottom": sh,
+                         "width": sw, "height": sh})
+    return monitors
+
+
+def _monitor_for_point(x, y):
+    """Return the monitor dict containing point (x, y), or primary if none."""
+    mons = _enumerate_monitors()
+    for m in mons:
+        if m["left"] <= x < m["right"] and m["top"] <= y < m["bottom"]:
+            return m
+    # Not inside any monitor (off-screen) → return primary (contains 0,0)
+    for m in mons:
+        if m["left"] <= 0 < m["right"] and m["top"] <= 0 < m["bottom"]:
+            return m
+    return mons[0]
+
+
+def _match_saved_monitor(saved):
+    """Find the current monitor matching a saved geometry signature.
+    Match order:
+    1. Exact match (position + size) — normal case
+    2. Size-only match — handles primary monitor change which shifts
+       virtual desktop origin (left/top) but keeps the same resolution
+    3. Closest by combined score — fallback for resolution changes
+    """
+    mons = _enumerate_monitors()
+    if not saved:
+        return None
+    mw = saved.get("mw", 0)
+    mh = saved.get("mh", 0)
+    ml = saved.get("ml", 0)
+    mt = saved.get("mt", 0)
+
+    # 1. Exact match — position + size
+    for m in mons:
+        if (m["width"] == mw and m["height"] == mh
+                and m["left"] == ml and m["top"] == mt):
+            return m
+
+    # 2. Size-only match — primary change shifts left/top but not resolution
+    size_matches = [m for m in mons if m["width"] == mw and m["height"] == mh]
+    if len(size_matches) == 1:
+        return size_matches[0]   # unique size match — must be the right monitor
+    if len(size_matches) > 1:
+        # Multiple monitors with same resolution — pick closest by position
+        best = min(size_matches,
+                   key=lambda m: abs(m["left"] - ml) + abs(m["top"] - mt))
+        return best
+
+    # 3. Closest by combined score — resolution changed
+    best, best_score = None, None
+    for m in mons:
+        score = (abs(m["width"]  - mw)
+                 + abs(m["height"] - mh)
+                 + abs(m["left"]   - ml)
+                 + abs(m["top"]    - mt))
+        if best_score is None or score < best_score:
+            best, best_score = m, score
+    return best
+
 # ── Volume overlay ────────────────────────────────────────────────────────────
 # Position preset constants
 POSITION_PRESETS = ["top-left", "top-right", "bottom-left", "bottom-right", "center", "custom"]
@@ -1708,18 +2092,38 @@ MIC_VOL_GAP      = 16   # gap between mic icon and vol popup when in same corner
 def _calc_preset_pos(position, win_w, win_h, screen_w, screen_h,
                      margin=POSITION_MARGIN, offset_y=0):
     """Calculate (x, y) for a named position preset.
+    Uses _enumerate_monitors() to find the true primary monitor (contains 0,0)
+    so changing the Windows primary monitor does not move preset popups.
     offset_y: shift y upward by this many pixels (used to stack mic above vol popup)."""
     m = margin
+    # Find the true primary monitor via Win32 — not tkinter's winfo_screenwidth
+    # which always reports the current primary and shifts when primary changes.
+    try:
+        mons = _enumerate_monitors()
+        # Primary monitor contains virtual desktop origin (0, 0)
+        primary = None
+        for mon in mons:
+            if mon["left"] <= 0 < mon["right"] and mon["top"] <= 0 < mon["bottom"]:
+                primary = mon
+                break
+        if primary is None:
+            primary = mons[0]
+        pw = primary["width"]; ph = primary["height"]
+        pl = primary["left"];  pt = primary["top"]
+    except Exception:
+        # Fallback to tkinter values if Win32 fails
+        pw = screen_w; ph = screen_h; pl = 0; pt = 0
+
     if position == "top-left":
-        return (m, m + offset_y)
+        return (pl + m, pt + m + offset_y)
     elif position == "top-right":
-        return (screen_w - win_w - m, m + offset_y)
+        return (pl + pw - win_w - m, pt + m + offset_y)
     elif position == "bottom-left":
-        return (m, screen_h - win_h - m - offset_y)
+        return (pl + m, pt + ph - win_h - m - offset_y)
     elif position == "bottom-right":
-        return (screen_w - win_w - m, screen_h - win_h - m - offset_y)
+        return (pl + pw - win_w - m, pt + ph - win_h - m - offset_y)
     elif position == "center":
-        return (screen_w // 2 - win_w // 2, screen_h // 2 - win_h // 2 - offset_y)
+        return (pl + pw // 2 - win_w // 2, pt + ph // 2 - win_h // 2 - offset_y)
     else:  # custom — caller uses saved x/y
         return None
 
@@ -1810,7 +2214,7 @@ class VolumeOverlay:
                 self._force_topmost()
             self._win.after(2000, self._keep_overlay_topmost)
 
-    def show(self, name, color, volume, muted, scale=1.0):
+    def show(self, name, color, volume, muted, scale=1.0, detail_text=None, show_bar=True):
         # Rebuild if scale changed or window was destroyed
         if (self._win is None or not self._win.winfo_exists()
                 or self._last_scale != scale):
@@ -1820,14 +2224,14 @@ class VolumeOverlay:
             self._lbl_name = self._lbl_vol = self._bar_bg = self._bar_fg = None
             self._build_window(scale)
 
-        text = "MUTED" if muted else f"{int(volume)}%"
+        text = str(detail_text) if detail_text is not None else ("MUTED" if muted else f"{int(volume)}%")
         fg   = "#ff6b6b" if muted else color
 
         # Update labels in-place — no rebuild, no flicker
         self._lbl_name.config(text=name, fg=color)
         self._lbl_vol.config(text=text, fg=fg)
 
-        if muted:
+        if muted or not show_bar:
             self._bar_bg.pack_forget()
         else:
             fw = max(2, int(self._bw * volume / 100))
@@ -1841,19 +2245,7 @@ class VolumeOverlay:
             wh = self._win.winfo_reqheight()
             sw = self._win.winfo_screenwidth()
             sh = self._win.winfo_screenheight()
-            cfg = self._cfg or {}
-            pos = cfg.get("overlay_position", "bottom-right")
-            if pos != "custom":
-                xy = _calc_preset_pos(pos, ww, wh, sw, sh)
-                ox, oy = xy if xy else (sw - ww - POSITION_MARGIN, sh - wh - POSITION_MARGIN)
-            else:
-                ox = cfg.get("overlay_x", -1)
-                oy = cfg.get("overlay_y", -1)
-                if ox < 0 or oy < 0:
-                    ox = sw - ww - POSITION_MARGIN
-                    oy = sh - wh - POSITION_MARGIN
-            # Sanity clamp for multi-monitor
-            ox = max(-3840, ox); oy = max(-2160, oy)
+            ox, oy = self._compute_position(ww, wh)
             self._win.geometry(f"+{ox}+{oy}")
 
         self._win.deiconify()
@@ -1879,13 +2271,78 @@ class VolumeOverlay:
         ny = self._win.winfo_y()
         self._drag = None
         if self._cfg is not None:
-            self._cfg["overlay_x"]       = nx
-            self._cfg["overlay_y"]       = ny
-            self._cfg["overlay_position"] = "custom"  # user dragged — mark as custom
+            # Save as percentage within the monitor the popup is on, plus that
+            # monitor's geometry signature so we can re-find it after layout changes.
+            cx = nx + max(1, self._win.winfo_width()) // 2
+            cy = ny + max(1, self._win.winfo_height()) // 2
+            mon = _monitor_for_point(cx, cy)
+            self._cfg["overlay_pct_x"]   = (nx - mon["left"]) / max(1, mon["width"])
+            self._cfg["overlay_pct_y"]   = (ny - mon["top"])  / max(1, mon["height"])
+            self._cfg["overlay_mon"]     = {
+                "mw": mon["width"], "mh": mon["height"],
+                "ml": mon["left"],  "mt": mon["top"],
+            }
+            self._cfg["overlay_position"] = "custom"
+            save_cfg(self._cfg)   # persist dragged position to disk
         self._job = self._root.after(2000, self._hide)
 
     def _hide(self):
         if self._win and self._win.winfo_exists(): self._win.withdraw()
+
+    def _compute_position(self, ww, wh):
+        """Compute (ox, oy) for the overlay window. Shared by show() and
+        show_message() so positioning is always identical."""
+        sw = self._win.winfo_screenwidth()
+        sh = self._win.winfo_screenheight()
+        cfg = self._cfg or {}
+        pos = cfg.get("overlay_position", "bottom-right")
+        if pos == "custom" and cfg.get("overlay_pct_x", -1) >= 0:
+            mon = _match_saved_monitor(cfg.get("overlay_mon"))
+            if mon is None:
+                mon = _monitor_for_point(0, 0)
+            ox = mon["left"] + int(cfg["overlay_pct_x"] * mon["width"])
+            oy = mon["top"]  + int(cfg["overlay_pct_y"] * mon["height"])
+            ox = max(mon["left"], min(ox, mon["right"]  - ww))
+            oy = max(mon["top"],  min(oy, mon["bottom"] - wh))
+        elif pos != "custom":
+            xy = _calc_preset_pos(pos, ww, wh, sw, sh)
+            ox, oy = xy if xy else (sw - ww - POSITION_MARGIN, sh - wh - POSITION_MARGIN)
+        else:
+            ox = sw - ww - POSITION_MARGIN
+            oy = sh - wh - POSITION_MARGIN
+        return ox, oy
+
+    def show_message(self, name, color, message, scale=1.0):
+        """Same popup as show(), but the big line is arbitrary text (e.g.
+        'Added overwatch') instead of a volume %. Progress bar hidden.
+        Used by Quick Add confirmation."""
+        if (self._win is None or not self._win.winfo_exists()
+                or self._last_scale != scale):
+            if self._win and self._win.winfo_exists():
+                self._win.destroy()
+            self._win = None
+            self._lbl_name = self._lbl_vol = self._bar_bg = self._bar_fg = None
+            self._build_window(scale)
+
+        self._lbl_name.config(text=name, fg=color)
+        self._lbl_vol.config(text=message, fg=color)
+        try:
+            self._bar_bg.pack_forget()
+        except Exception:
+            pass
+
+        if not self._win.winfo_ismapped():
+            self._win.update_idletasks()
+            ww = self._win.winfo_reqwidth()
+            wh = self._win.winfo_reqheight()
+            ox, oy = self._compute_position(ww, wh)
+            self._win.geometry(f"+{ox}+{oy}")
+
+        self._win.deiconify()
+        self._force_topmost()
+        if self._job:
+            self._root.after_cancel(self._job)
+        self._job = self._root.after(2000, self._hide)
 
     def set_enabled(self,v):
         if not v: self._hide()
@@ -1920,22 +2377,29 @@ class MicOverlay:
         sw = self._win.winfo_screenwidth()
         sh = self._win.winfo_screenheight()
         pos = self._cfg.get("mic_position", "bottom-right")
-        if pos != "custom":
-            # Offset mic upward so it doesn't overlap the vol popup.
-            # Vol popup is approx 80px tall at default scale.
-            # Offset = vol_popup_height_estimate + gap
+        if pos == "custom" and self._cfg.get("mic_pct_x", -1) >= 0:
+            # Restore percentage-based position on the saved monitor.
+            # Use saved monitor signature to find the right monitor — don't
+            # use winfo_width/height here as window isn't rendered yet (returns 1).
+            mon = _match_saved_monitor(self._cfg.get("mic_mon"))
+            if mon is None:
+                mon = _monitor_for_point(0, 0)  # primary fallback
+            x = mon["left"] + int(self._cfg["mic_pct_x"] * mon["width"])
+            y = mon["top"]  + int(self._cfg["mic_pct_y"] * mon["height"])
+            # Clamp using sz (known icon size) — safe before window is rendered
+            x = max(mon["left"], min(x, mon["right"]  - sz))
+            y = max(mon["top"],  min(y, mon["bottom"] - sz))
+        elif pos != "custom":
             vol_h_est = max(60, int(80 * self._cfg.get("overlay_size", 0.7)))
             offset = vol_h_est + MIC_VOL_GAP
             xy = _calc_preset_pos(pos, sz, sz, sw, sh, offset_y=offset)
             x, y = xy if xy else (sw - sz - POSITION_MARGIN,
                                    sh - sz - POSITION_MARGIN - offset)
         else:
-            x = self._cfg.get("mic_icon_x", -1)
-            y = self._cfg.get("mic_icon_y", -1)
-            if x < 0 or y < 0:
-                vol_h_est = max(60, int(80 * self._cfg.get("overlay_size", 0.7)))
-                x = sw - sz - POSITION_MARGIN
-                y = sh - sz - POSITION_MARGIN - vol_h_est - MIC_VOL_GAP
+            # custom but no pct saved yet (older config) — preset fallback
+            vol_h_est = max(60, int(80 * self._cfg.get("overlay_size", 0.7)))
+            x = sw - sz - POSITION_MARGIN
+            y = sh - sz - POSITION_MARGIN - vol_h_est - MIC_VOL_GAP
         self._win.geometry(f"+{x}+{y}")
 
         self._canvas.bind("<ButtonPress-1>",   self._ds)
@@ -1995,9 +2459,20 @@ class MicOverlay:
             self._win.geometry(f"+{e.x_root-self._drag[0]}+{e.y_root-self._drag[1]}")
     def _de(self,e):
         if self._drag:
-            self._cfg["mic_icon_x"]  = self._win.winfo_x()
-            self._cfg["mic_icon_y"]  = self._win.winfo_y()
-            self._cfg["mic_position"] = "custom"  # user dragged — mark as custom
+            nx = self._win.winfo_x()
+            ny = self._win.winfo_y()
+            # Use sz for center — winfo_width/height may be stale if icon just rebuilt
+            sz_now = max(20, self._cfg.get("mic_icon_size", 40))
+            cx = nx + sz_now // 2
+            cy = ny + sz_now // 2
+            mon = _monitor_for_point(cx, cy)
+            self._cfg["mic_pct_x"]   = (nx - mon["left"]) / max(1, mon["width"])
+            self._cfg["mic_pct_y"]   = (ny - mon["top"])  / max(1, mon["height"])
+            self._cfg["mic_mon"]     = {
+                "mw": mon["width"], "mh": mon["height"],
+                "ml": mon["left"],  "mt": mon["top"],
+            }
+            self._cfg["mic_position"] = "custom"
             save_cfg(self._cfg)
         self._drag=None
 
@@ -2027,7 +2502,28 @@ class MicOverlay:
             self._win.attributes("-alpha",alpha)
             self._render()
             self._apply_clickthrough()
+            self._reposition()   # re-clamp position in case monitor layout changed
         else: self._build()
+
+    def _reposition(self):
+        """Re-clamp mic icon on-screen using current monitor geometry.
+        Called after resolution/monitor changes so icon never drifts off-screen.
+        Uses sz from cfg — never winfo_width/height which may be stale."""
+        if not (self._win and self._win.winfo_exists()):
+            return
+        sz  = max(20, self._cfg.get("mic_icon_size", 40))
+        pos = self._cfg.get("mic_position", "bottom-right")
+        if pos == "custom" and self._cfg.get("mic_pct_x", -1) >= 0:
+            mon = _match_saved_monitor(self._cfg.get("mic_mon"))
+            if mon is None:
+                mon = _monitor_for_point(0, 0)
+            x = mon["left"] + int(self._cfg["mic_pct_x"] * mon["width"])
+            y = mon["top"]  + int(self._cfg["mic_pct_y"] * mon["height"])
+            x = max(mon["left"], min(x, mon["right"]  - sz))
+            y = max(mon["top"],  min(y, mon["bottom"] - sz))
+            self._win.geometry(f"+{x}+{y}")
+        # For preset positions, leave as-is — they're anchored to primary monitor
+        # which tkinter handles correctly.
 
     def rebuild(self): self._build()
     def show(self):
@@ -2043,21 +2539,26 @@ class HotkeyEngine:
     Works while any other key is held — same mechanism as Discord/OBS."""
 
     def __init__(self):
-        pass  # _HOOK is global, shared
+        self._on_quick_add = None  # stored so all reloads keep Quick Add registered
 
-    def reload(self, cfg, on_vol, on_switch=None):
+    def reload(self, cfg, on_vol, on_switch=None, on_quick_add=None):
+        # Store on_quick_add when provided; reuse stored value otherwise.
+        # This keeps Quick Add registered across autosave/mode/settings reloads
+        # even when the caller doesn't pass on_quick_add.
+        if on_quick_add is not None:
+            self._on_quick_add = on_quick_add
         # Save old callbacks, build new ones, then atomically swap
         # Prevents gap where no hotkeys are registered during reload
         _prev = _HOOK._callbacks[:]
         _HOOK._callbacks = []
         try:
-            self._register_all(cfg, on_vol, on_switch)
+            self._register_all(cfg, on_vol, on_switch, self._on_quick_add)
         except Exception as e:
             _HOOK._callbacks = _prev  # restore on failure
             print(f"[HotkeyEngine] reload failed, restored previous: {e}")
             return
 
-    def _register_all(self, cfg, on_vol, on_switch=None):
+    def _register_all(self, cfg, on_vol, on_switch=None, on_quick_add=None):
         mode = cfg.get("mode","multi")
 
         if mode == "multi":
@@ -2067,25 +2568,13 @@ class HotkeyEngine:
                 def mk_vol(grp, delta):
                     def _():
                         if not grp.get("enabled",True): return
-                        with _cfg_lock:
-                            if grp.get("muted"):
-                                # Resume from pre-mute volume, not 0
-                                grp["volume"] = grp.get("_vbm", 80)
-                                grp["muted"] = False
-                            else:
-                                actual = _read_actual_vol(grp)
-                                if actual is not None and abs(actual - grp["volume"]) > 3:
-                                    grp["volume"] = actual
-                                grp["volume"] = _calc_vol(grp["volume"], delta, cfg)
-                        apply_vol(grp, cfg); on_vol(grp)
+                        _bump_group_volume(grp, delta, cfg); on_vol(grp)
                     return _
 
                 def mk_mute(grp):
                     def _():
                         if not grp.get("enabled",True): return
-                        if grp.get("muted"): grp["muted"]=False; grp["volume"]=grp.get("_vbm",80)
-                        else: grp["_vbm"]=grp["volume"]; grp["muted"]=True
-                        apply_vol(grp, cfg); on_vol(grp)
+                        _toggle_group_mute(grp, cfg); on_vol(grp)
                     return _
 
                 step = g.get("step",5)
@@ -2096,6 +2585,15 @@ class HotkeyEngine:
                 ]:
                     if hk.strip():
                         _HOOK.register(hk.strip(), fn, suppress=True, debounce=dbnc)
+
+                # Quick Add — per-group, always in multi mode;
+                # also in single mode when quick_add_per_card is enabled
+                qk = g.get("quick_add_key", "").strip()
+                if qk and on_quick_add:
+                    def mk_qa(grp=g):
+                        def _(): on_quick_add(grp)
+                        return _
+                    _HOOK.register(qk, mk_qa(), suppress=False, debounce=0.30)
 
         elif mode == "single" and on_switch:
             # Group switch keys
@@ -2114,36 +2612,15 @@ class HotkeyEngine:
             def _up():
                 ag = ref.get("_active_group_ref")
                 if ag and ag.get("enabled",True):
-                    with _cfg_lock:
-                        if ag.get("muted"):
-                            # Resume from pre-mute volume, not 0
-                            ag["volume"] = ag.get("_vbm", 80)
-                            ag["muted"] = False
-                        else:
-                            actual = _read_actual_vol(ag)
-                            if actual is not None and abs(actual - ag["volume"]) > 3:
-                                ag["volume"] = actual
-                            ag["volume"] = _calc_vol(ag["volume"], ag.get("step",5), ref)
-                    apply_vol(ag,ref); on_vol(ag)
+                    _bump_group_volume(ag, ag.get("step",5), ref); on_vol(ag)
             def _dn():
                 ag = ref.get("_active_group_ref")
                 if ag and ag.get("enabled",True):
-                    with _cfg_lock:
-                        if ag.get("muted"):
-                            ag["volume"] = ag.get("_vbm", 80)
-                            ag["muted"] = False
-                        else:
-                            actual = _read_actual_vol(ag)
-                            if actual is not None and abs(actual - ag["volume"]) > 3:
-                                ag["volume"] = actual
-                            ag["volume"] = _calc_vol(ag["volume"], -ag.get("step",5), ref)
-                    apply_vol(ag,ref); on_vol(ag)
+                    _bump_group_volume(ag, -ag.get("step",5), ref); on_vol(ag)
             def _mu():
                 ag = ref.get("_active_group_ref")
                 if ag and ag.get("enabled",True):
-                    if ag.get("muted"): ag["muted"]=False; ag["volume"]=ag.get("_vbm",80)
-                    else: ag["_vbm"]=ag["volume"]; ag["muted"]=True
-                    apply_vol(ag,ref); on_vol(ag)
+                    _toggle_group_mute(ag, ref); on_vol(ag)
 
             for hk, fn, dbnc in [(sk.get("vol_down",""), _dn, 0.02),
                                     (sk.get("vol_up",""),   _up, 0.02),
@@ -2151,42 +2628,49 @@ class HotkeyEngine:
                 if hk.strip():
                     _HOOK.register(hk.strip(), fn, suppress=True, debounce=dbnc)
 
-        # Hardware knob (AULAF75 etc) — intercept media volume keys.
-        # Always controls the ACTIVE group (same as 1-knob mode).
-        # Use the cycle key to switch which group the knob controls.
-        if cfg.get("hw_knob_enabled", False):
+            # Quick Add per-group cards — only when quick_add_per_card is enabled
+            if cfg.get("quick_add_per_card", False):
+                for g in cfg["groups"]:
+                    qk = g.get("quick_add_key", "").strip()
+                    if qk and on_quick_add:
+                        def mk_qa_s(grp=g):
+                            def _(): on_quick_add(grp)
+                            return _
+                        _HOOK.register(qk, mk_qa_s(), suppress=False, debounce=0.30)
+
+            # Quick Add — shared, single mode only, targets active group
+            qa_single = cfg.get("quick_add_key_single", "").strip()
+            if qa_single and on_quick_add:
+                def _qa_active(r=ref, oqa=on_quick_add):
+                    ag = r.get("_active_group_ref")
+                    if ag is not None:
+                        oqa(ag)
+                _HOOK.register(qa_single, _qa_active, suppress=False, debounce=0.30)
+
+        # Hardware knob (AULAF75 etc) — 1-knob mode only.
+        if mode == "single" and cfg.get("hw_knob_enabled", False):
             def _hw_up():
                 g = cfg.get("_active_group_ref")
                 if not g or not g.get("enabled",True): return
-                actual = _read_actual_vol(g)
-                if actual is not None and abs(actual - g["volume"]) > 3:
-                    g["volume"] = actual
-                g["volume"]=_calc_vol(g["volume"], g.get("step",5), cfg)
-                g["muted"]=False; apply_vol(g,cfg); on_vol(g)
+                _bump_group_volume(g, g.get("step",5), cfg); on_vol(g)
 
             def _hw_down():
                 g = cfg.get("_active_group_ref")
                 if not g or not g.get("enabled",True): return
-                actual = _read_actual_vol(g)
-                if actual is not None and abs(actual - g["volume"]) > 3:
-                    g["volume"] = actual
-                g["volume"]=_calc_vol(g["volume"], -g.get("step",5), cfg)
-                g["muted"]=False; apply_vol(g,cfg); on_vol(g)
+                _bump_group_volume(g, -g.get("step",5), cfg); on_vol(g)
 
             def _hw_mute():
                 g = cfg.get("_active_group_ref")
                 if not g or not g.get("enabled",True): return
-                if g.get("muted"): g["muted"]=False; g["volume"]=g.get("_vbm",80)
-                else: g["_vbm"]=g["volume"]; g["muted"]=True
-                apply_vol(g,cfg); on_vol(g)
+                _toggle_group_mute(g, cfg); on_vol(g)
 
             _HOOK.register("volume up",   _hw_up,   suppress=True, is_media=True, debounce=0.02)
             _HOOK.register("volume down", _hw_down, suppress=True, is_media=True, debounce=0.02)
             _HOOK.register("volume mute", _hw_mute, suppress=True, is_media=True, debounce=0.30)
 
-        # Cycle key — only active in 1-knob mode or when hardware knob is enabled
+        # Cycle key — 1-knob mode only
         ck = cfg.get("cycle_key","").strip()
-        if ck and on_switch and (mode == "single" or cfg.get("hw_knob_enabled",False)):
+        if ck and on_switch and mode == "single":
             def _cycle(c=cfg, os=on_switch):
                 gs = [g for g in c["groups"] if g.get("enabled",True)]
                 if not gs: return
@@ -2473,49 +2957,60 @@ class SettingsWin(tk.Toplevel):
         def _sep():
             txt.insert("end", "\n")
 
-        # ── Header ──────────────────────────────────────────────────────────
-        _line("Setup (Takes 1-2 minutes)", bold=True, size=11)
+        # ── Quick start ──────────────────────────────────────────────────────
+        _line("Quick Start", bold=True, size=11)
+        _sep()
+        _line("If your knob already controls your PC volume, simply enable Hardware Knob "
+              "at the top of the main page, set your Cycle key, and add your apps to "
+              "whichever groups you want.", color=TEXT)
+        _sep()
+        _line("If you want full customization, follow the guide below.", color=SUBTEXT)
+        _sep()
+
+        # ── Divider ─────────────────────────────────────────────────────────
+        _line("─" * 40, color=BORDER)
+        _sep()
+
+        _line("Setup Guide", bold=True, size=11)
         _sep()
 
         # ── Step 1 ──────────────────────────────────────────────────────────
-        _line("Step 1 — Program your keyboard software", bold=True, color="#1DB954")
-        _line("Skip this step if your knob cannot be remapped.", color=SUBTEXT)
+        _line("Step 1 — Choose your mode", bold=True, color="#1DB954")
+        _line("1-Knob  —  one knob controls all groups. Press Cycle to switch between them.", indent=1)
+        _line("Multiple Knobs  —  each group has its own dedicated hotkeys.", indent=1)
         _sep()
 
-        _line("Multiple Knobs Mode:", bold=True)
-        _line("Knob left   →  F13  (Vol-)", indent=1)
-        _line("Knob right  →  F14  (Vol+)", indent=1)
-        _line("Knob click  →  F15  (Mute)", indent=1)
-        _line("Repeat for each additional knob using the next available F-keys.", indent=1, color=SUBTEXT)
+        # ── Step 2 ──────────────────────────────────────────────────────────
+        _line("Step 2 — Program your keyboard software", bold=True, color="#1DB954")
+        _line("Set these keybinds in your keyboard software.", color=SUBTEXT)
         _sep()
 
-        _line("1-Knob Mode:", bold=True)
+        _line("1-Knob Mode (recommended):", bold=True)
         _line("Knob left   →  F13  (Vol-)", indent=1)
         _line("Knob right  →  F14  (Vol+)", indent=1)
         _line("Knob click  →  F15  (Cycle groups)", indent=1)
         _line("F12 key     →  F16  (Mute)", indent=1)
         _sep()
 
-        _line("Can't remap? Enable Hardware Knob in the main window.", color=SUBTEXT)
+        _line("Multiple Knobs Mode:", bold=True)
+        _line("Knob left   →  F13  (Vol-)", indent=1)
+        _line("Knob right  →  F14  (Vol+)", indent=1)
+        _line("Knob click  →  F15  (Mute)", indent=1)
+        _line("Repeat with the next F-keys for each additional knob.", indent=1, color=SUBTEXT)
         _sep()
 
-        # ── Step 2 ──────────────────────────────────────────────────────────
-        _line("Step 2 — Choose your mode in KnobMixer", bold=True, color="#1DB954")
-        _line("Multiple Knobs  —  each group has its own hotkeys.", indent=1)
-        _line("1-Knob  —  one knob controls all groups.", indent=1)
-        _line("Press Cycle key to switch between groups.", indent=2, color=SUBTEXT)
-        _line("Keys are set above the groups on the main window.", indent=2, color=SUBTEXT)
+        _line("Can't remap your knob? Enable Hardware Knob in the main window instead.", color=SUBTEXT)
         _sep()
 
         # ── Step 3 ──────────────────────────────────────────────────────────
-        _line("Step 3 — Set your hotkeys", bold=True, color="#1DB954")
-        _line("Assign the keys from Step 1 to your groups in KnobMixer.", indent=1)
+        _line("Step 3 — Set your hotkeys in KnobMixer", bold=True, color="#1DB954")
+        _line("Assign the keys from Step 2 to your groups in KnobMixer.", indent=1)
         _sep()
 
         # ── Step 4 ──────────────────────────────────────────────────────────
         _line("Step 4 — Add your apps", bold=True, color="#1DB954")
-        _line("Click Edit on each group and add app names.", indent=1)
-        _line("Open apps appear in the list for easy adding.", indent=1)
+        _line("Click Edit Apps on each group card to add apps.", indent=1)
+        _line("Open apps playing audio appear in the list for easy adding.", indent=1)
         _sep()
 
         # ── Divider ─────────────────────────────────────────────────────────
@@ -2536,6 +3031,10 @@ class SettingsWin(tk.Toplevel):
         _sep()
         _line("💡 No knob?", bold=True)
         _line("Use any hotkey.", indent=1)
+        _sep()
+        _line("💡 Multiple open apps in same group", bold=True)
+        _line("If more than one app in the same group is open (not recommended),", indent=1)
+        _line("the volume level will be synced for both.", indent=1)
 
         txt.config(state="disabled")
 
@@ -2609,15 +3108,6 @@ class SettingsWin(tk.Toplevel):
                   lambda p: self._sld(p, self._v_sdthr, 1, 40, 1).pack(side="left"))
         self._row(sc, "Fine step size (%)",
                   lambda p: self._sld(p, self._v_sdstp, 0.1, 5.0, 0.1).pack(side="left"))
-
-        self._sep(sc, "Privacy")
-        self._v_analytics = tk.BooleanVar(value=self.cfg.get("analytics_enabled", True))
-        self._row(sc, "Send anonymous usage data",
-                  lambda p: self._chk(p, self._v_analytics).pack(side="left"))
-        tk.Label(sc,
-                 text="No personal data. Helps count active users.",
-                 font=("Segoe UI", 8), fg=SUBTEXT, bg=BG,
-                 justify="left").pack(padx=16, pady=(0,4), anchor="w")
 
         self._sep(sc, f"About KnobMixer v{APP_VER}")
         import webbrowser
@@ -2741,6 +3231,13 @@ class SettingsWin(tk.Toplevel):
                   relief="flat", cursor="hand2", padx=8, pady=3,
                   command=_open_log_folder).pack(side="left", padx=(4,0))
 
+        tk.Label(sc,
+                 text="KnobMixer sends one anonymous ping to count number of users. "
+                      "To opt out: set \"analytics_enabled\": false in "
+                      "%APPDATA%\\KnobMixer\\config.json",
+                 font=("Segoe UI", 8), fg=SUBTEXT, bg=BG,
+                 justify="left", wraplength=420).pack(padx=16, pady=(8,4), anchor="w")
+
         self._sep(sc, "Reset All Settings")
         tk.Label(sc, text="Resets everything to factory defaults — groups, hotkeys, "
                           "all settings. The app will restart.",
@@ -2817,6 +3314,21 @@ class SettingsWin(tk.Toplevel):
         self._row(sc, "Revert after (seconds)",
                   lambda p: self._single_timeout_spin(p))
 
+        self._sep(sc, "Quick Add")
+        tk.Label(sc,
+                 text="Set the shared Quick Add hotkey in the main window next to the Cycle key. "
+                      "It adds the focused app to whichever group is currently active.",
+                 font=("Segoe UI", 8), fg=SUBTEXT, bg=BG,
+                 justify="left", wraplength=420).pack(padx=16, pady=(4,4), anchor="w")
+        self._v_qa_per_card = tk.BooleanVar(value=self.cfg.get("quick_add_per_card", False))
+        self._row(sc, "Add Quick Add App hotkey to each group card",
+                  lambda p: self._chk(p, self._v_qa_per_card).pack(side="left"))
+        tk.Label(sc,
+                 text="When enabled, each group card shows its own Quick Add hotkey "
+                      "so you can add to a specific group regardless of which is active.",
+                 font=("Segoe UI", 8), fg=SUBTEXT, bg=BG,
+                 justify="left", wraplength=420).pack(padx=16, pady=(0,6), anchor="w")
+
         # Hardware Knob is controlled from the main window — not duplicated here
         self._v_hw_en = tk.BooleanVar(value=self.cfg.get("hw_knob_enabled", False))
 
@@ -2859,10 +3371,10 @@ class SettingsWin(tk.Toplevel):
         def _hk_cb(hk):
             ok, msg = _validate_hotkey_choice(self.cfg, hk, ("mic",))
             if not ok:
-                _themed_alert(self, "Hotkey already in use", msg)
-                return
+                return False, msg
             self._v_michk.set(hk)
             self._apply()
+            return True, ""
         f_hk = tk.Frame(sc, bg=BG)
         f_hk.pack(fill="x", padx=16, pady=7)
         tk.Label(f_hk, text="Mic mute hotkey", font=("Segoe UI", 9),
@@ -2959,6 +3471,7 @@ class SettingsWin(tk.Toplevel):
         prev_timeout = c.get("single_timeout", 30)
         prev_auto = c.get("single_auto_revert", False)
         prev_hw = c.get("hw_knob_enabled", False)
+        prev_qa_per_card = c.get("quick_add_per_card", False)
         c["start_minimized"]   = self._v_startmin.get()
 
         c["show_overlay"]       = self._v_overlay.get()
@@ -2968,7 +3481,6 @@ class SettingsWin(tk.Toplevel):
         # overlay position is saved directly by drag — preserve it here
         c.setdefault("overlay_x", self.cfg.get("overlay_x", -1))
         c.setdefault("overlay_y", self.cfg.get("overlay_y", -1))
-        c["analytics_enabled"] = self._v_analytics.get()
         set_startup(self._v_startup.get())
         c["slowdown_enabled"]  = self._v_sden.get()
         c["slowdown_threshold"]= self._v_sdthr.get()
@@ -2976,6 +3488,8 @@ class SettingsWin(tk.Toplevel):
         c["single_timeout"]    = self._v_sto.get()
         c["single_auto_revert"] = self._v_auto_revert.get()
         c["hw_knob_enabled"]   = self._v_hw_en.get()
+        if hasattr(self, "_v_qa_per_card"):
+            c["quick_add_per_card"] = self._v_qa_per_card.get()
         c["mic_enabled"]       = self._v_micen.get()
         c["mic_hotkey"]        = self._v_michk.get()
         c["mic_start_muted"]   = self._v_micst.get()
@@ -2992,7 +3506,7 @@ class SettingsWin(tk.Toplevel):
         self.on_change()
         if self._app_ref:
             self._app_ref._show_saved()
-            if prev_auto != c["single_auto_revert"]:
+            if prev_auto != c["single_auto_revert"] or prev_qa_per_card != c.get("quick_add_per_card", False):
                 self._app_ref._redraw()
             else:
                 self._app_ref._refresh_default_buttons()
@@ -3258,6 +3772,8 @@ class App:
         self._timeout_start=0
         self._group_widgets=[]
         self._tutorial = None
+        self._home_mic_btn = None
+        self._home_mic_img = None
         
         self._build_win()
         self.overlay=VolumeOverlay(self.root)
@@ -3266,7 +3782,7 @@ class App:
         self._build_ui()
         _HOOK.start()
         self._init_single()   # sets _active_group_ref first
-        self.hk.reload(self.cfg,self._on_vol,self._on_switch)  # then registers keys
+        self.hk.reload(self.cfg,self._on_vol,self._on_switch,on_quick_add=self._quick_add_to_group)  # then registers keys
         self._reg_mic_hk()
 
         if self.cfg.get("mic_enabled", False):
@@ -3274,6 +3790,7 @@ class App:
             if self.cfg.get("mic_start_muted", False):
                 self.mic.set(True, self.cfg)
             self.mic_ov = MicOverlay(self.root, self.mic, self.cfg)
+        self._refresh_home_mic_btn()
 
         self._refresh_loop()
         self._setup_tray()
@@ -3316,7 +3833,7 @@ class App:
         hdr=tk.Frame(self.root,bg="#111118",pady=12); hdr.pack(fill="x")
         lf=tk.Frame(hdr,bg="#111118"); lf.pack(side="left",padx=16)
         tk.Label(lf,text="KnobMixer",font=("Segoe UI",16,"bold"),fg=TEXT,bg="#111118").pack(anchor="w")
-        tk.Label(lf,text=f"v{APP_VER}  •  Volume control for apps using knobs and hotkeys",
+        tk.Label(lf,text=f"v{APP_VER}",
                  font=("Segoe UI",8),fg=SUBTEXT,bg="#111118").pack(anchor="w", pady=(1,0))
 
         rf=tk.Frame(hdr,bg="#111118"); rf.pack(side="right",padx=16)
@@ -3329,12 +3846,18 @@ class App:
                   width=3,
                   activebackground=HOVER,activeforeground=TEXT,
                   relief="flat",cursor="hand2",padx=0,
-                  command=self._start_tutorial).pack(side="right",padx=(0,2), ipady=2)
+                  command=self._open_howto).pack(side="right",padx=(0,2), ipady=2)
         self._onoff_btn=tk.Button(rf,text="Enabled",font=("Segoe UI",9,"bold"),
                                   bg="#183524",fg="#1DB954",activebackground="#214733",
                                   relief="flat",cursor="hand2",padx=12,pady=5,
                                   command=self._toggle_en)
         self._onoff_btn.pack(side="right",padx=(0,8))
+        self._home_mic_btn = tk.Button(
+            rf, text="Mic", font=("Segoe UI",8,"bold"),
+            bg="#183524", fg="#1DB954", activebackground="#214733",
+            activeforeground="#1DB954", relief="flat", cursor="hand2",
+            padx=10, pady=5, command=self._toggle_mic)
+        self._refresh_home_mic_btn()
 
         self._update_url = [None]  # store URL for click
         # Update check button — styled like ON button, sits next to gear icon
@@ -3377,10 +3900,11 @@ class App:
                  text="Can't change your knob's volume keys? Use this.",
                  font=("Segoe UI",8), fg=SUBTEXT, bg=PANEL).pack(side="left", padx=(6,0))
         # Hardware knob only relevant in 1-Knob mode — show/hide with mode
-        if self.cfg.get("mode","single") == "single" or self.cfg.get("hw_knob_enabled",False):
+        if self.cfg.get("mode","single") == "single":
             self._hw_row.pack(fill="x")
 
-        # Single-knob status bar
+        # Single-knob status bar — NOT packed here, packed at bottom after groups
+        # by _init_single() so it always appears below the group cards.
         self._sb=tk.Frame(self.root,bg="#111118",pady=3)
         self._active_lbl=tk.Label(self._sb,text="",font=("Segoe UI",9,"bold"),
                                   fg="#1DB954",bg="#111118")
@@ -3388,7 +3912,6 @@ class App:
         self._timeout_lbl=tk.Label(self._sb,text="",font=("Segoe UI",8),
                                    fg=SUBTEXT,bg="#111118")
         self._timeout_lbl.pack(side="right",padx=14)
-        if self.cfg.get("mode")=="single": self._sb.pack(fill="x")
 
         # 1-Knob key panel — shown above groups in 1-knob mode only
         self._knob_panel = tk.Frame(self.root, bg=PANEL, pady=4)
@@ -3427,10 +3950,10 @@ class App:
                 def _set_single_hotkey(hk, a=action):
                     ok, msg = _validate_hotkey_choice(self.cfg, hk, ("single_shared", a))
                     if not ok:
-                        _themed_alert(self.root, "Hotkey already in use", msg)
-                        return
+                        return False, msg
                     self.cfg["single_keys"][a] = hk
                     self._autosave()
+                    return True, ""
                 _make_hk_cell(row1, lbl,
                               lambda a=action: sk.get(a,""),
                               _set_single_hotkey,
@@ -3440,9 +3963,9 @@ class App:
         def _ck_cb(hk):
             ok, msg = _validate_hotkey_choice(self.cfg, hk, ("cycle",))
             if not ok:
-                _themed_alert(self.root, "Hotkey already in use", msg)
-                return
+                return False, msg
             self.cfg["cycle_key"] = hk; self._autosave()
+            return True, ""
         def _ck_clr(): self.cfg["cycle_key"] = ""; self._autosave()
         if hw:
             tk.Label(row1, text="Vol keys handled by Hardware Knob",
@@ -3450,6 +3973,17 @@ class App:
         _make_hk_cell(row1, "Cycle",
                       lambda: self.cfg.get("cycle_key",""),
                       _ck_cb, _ck_clr).pack(side="left")
+        # Quick Add — shared, 1-knob mode only
+        def _qa_cb(hk):
+            ok, msg = _validate_hotkey_choice(self.cfg, hk, ("quick_add_single",))
+            if not ok:
+                return False, msg   # HotkeyCapture shows error + reverts
+            self.cfg["quick_add_key_single"] = hk; self._autosave()
+            return True, ""
+        def _qa_clr(): self.cfg["quick_add_key_single"] = ""; self._autosave()
+        _make_hk_cell(row1, "Quick Add App",
+                      lambda: self.cfg.get("quick_add_key_single",""),
+                      _qa_cb, _qa_clr).pack(side="left", padx=(10,0))
         # Knob panel packs after groups frame is created (see below)
         self._knob_panel_pending = self.cfg.get("mode") == "single"
 
@@ -3544,10 +4078,14 @@ class App:
 
         # Bottom bar
         bot=tk.Frame(self.root,bg=PANEL,pady=7); bot.pack(fill="x")
-        tk.Button(bot,text="+ Group",font=("Segoe UI",9),bg=BORDER,fg=SUBTEXT,
+        # Active group status bar — packed at very bottom so it's always below groups
+        if self.cfg.get("mode") == "single":
+            self._sb.pack(fill="x")
+        self._add_group_btn = tk.Button(bot,text="+ Group",font=("Segoe UI",9),bg=BORDER,fg=SUBTEXT,
                   activebackground=HOVER,activeforeground=TEXT,
                   relief="flat",cursor="hand2",padx=10,pady=4,
-                  command=self._add_group).pack(side="left",padx=(12,4))
+                  command=self._add_group)
+        self._add_group_btn.pack(side="left",padx=(12,4))
         # Only show Master Vol button if no master vol group exists yet
         self._master_vol_btn = tk.Button(
             bot, text="+ Master Vol", font=("Segoe UI",9),
@@ -3743,11 +4281,11 @@ class App:
                 def _cb(hk,g=group,a=action):
                     ok, msg = _validate_hotkey_choice(self.cfg, hk, ("group", g.get("id", id(g)), a))
                     if not ok:
-                        _themed_alert(self.root, "Hotkey already in use", msg)
-                        return
+                        return False, msg
                     g.setdefault("keys",{})[a]=hk
-                    self.hk.reload(self.cfg,self._on_vol,self._on_switch)
+                    self.hk.reload(self.cfg,self._on_vol,self._on_switch,on_quick_add=self._quick_add_to_group)
                     self._autosave()
+                    return True, ""
                 btn=make_hotkey_btn(rf2,cur,_cb)
                 btn.pack(side="left")
                 def _clr(g=group,a=action,b=btn):
@@ -3757,7 +4295,7 @@ class App:
                     else:
                         g.setdefault("keys",{})[a]=""
                         b.config(text="—")
-                        self.hk.reload(self.cfg,self._on_vol,self._on_switch)
+                        self.hk.reload(self.cfg,self._on_vol,self._on_switch,on_quick_add=self._quick_add_to_group)
                         self._autosave()
                 tk.Button(rf2,text="×",font=("Segoe UI",9,"bold"),bg=PANEL,fg="#6d7086",
                           activebackground=PANEL,activeforeground=TEXT,
@@ -3767,7 +4305,7 @@ class App:
 
         # Row 4: apps (skip for master volume groups)
         if not group.get("master_volume"):
-            r4=tk.Frame(card,bg=PANEL); r4.pack(fill="x",padx=10,pady=(1,7))
+            r4=tk.Frame(card,bg=PANEL); r4.pack(fill="x",padx=10,pady=(1,3))
             apps_wrap=tk.Frame(r4,bg=PANEL)
             apps_wrap.pack(side="left",fill="x",expand=True)
             tk.Button(r4,text="Edit Apps",font=("Segoe UI",8,"bold"),bg=BORDER,fg=TEXT,
@@ -3777,6 +4315,43 @@ class App:
                                          all_groups=self.cfg["groups"])
                       ).pack(side="right")
             self._render_app_chips(apps_wrap, group.get("apps", []))
+
+            # Row 5: Quick Add hotkey — always in multi mode,
+            # in single mode only if quick_add_per_card is enabled in settings
+            if mode == "multi" or self.cfg.get("quick_add_per_card", False):
+                r5 = tk.Frame(card, bg=PANEL); r5.pack(fill="x", padx=10, pady=(0,7))
+                tk.Label(r5, text="Quick Add App:", font=("Segoe UI",7), fg=SUBTEXT,
+                         bg=PANEL).pack(side="left", padx=(0,4))
+                cur_qk = group.get("quick_add_key", "")
+                def _qk_cb(hk, g=group):
+                    ok, msg = _validate_hotkey_choice(self.cfg, hk,
+                                                      ("quick_add", g.get("id", id(g))))
+                    if not ok:
+                        return False, msg   # HotkeyCapture shows error + reverts
+                    g["quick_add_key"] = hk
+                    self.hk.reload(self.cfg, self._on_vol, self._on_switch, on_quick_add=self._quick_add_to_group)
+                    self._autosave()
+                    return True, ""
+                qk_btn = make_hotkey_btn(r5, cur_qk, _qk_cb)
+                qk_btn.pack(side="left")
+                def _qk_clr(g=group, b=qk_btn):
+                    cap = getattr(b, "_capture", None)
+                    if cap and cap._active:
+                        cap._finish(None)
+                    else:
+                        g["quick_add_key"] = ""
+                        b.config(text="—")
+                        self.hk.reload(self.cfg, self._on_vol, self._on_switch, on_quick_add=self._quick_add_to_group)
+                        self._autosave()
+                tk.Button(r5, text="×", font=("Segoe UI",9,"bold"), bg=PANEL, fg="#6d7086",
+                          activebackground=PANEL, activeforeground=TEXT,
+                          relief="flat", cursor="hand2", padx=3, pady=0,
+                          command=_qk_clr).pack(side="left", padx=(1,0))
+                tk.Label(r5, text="— press to add active app to this group",
+                         font=("Segoe UI",7), fg=SUBTEXT, bg=PANEL).pack(side="left", padx=(6,0))
+            else:
+                # 1-knob mode: add bottom padding to match multi mode card height
+                tk.Frame(card, bg=PANEL, height=7).pack()
         else:
             tk.Label(card,text="Controls the entire PC volume",
                      font=("Segoe UI",8),fg="#7fe4f0",bg=PANEL).pack(
@@ -3799,19 +4374,25 @@ class App:
         for w in parent.winfo_children():
             w.destroy()
         if not apps:
-            tk.Label(parent, text="No apps - click Edit Apps to add",
+            tk.Label(parent, text="No apps — click Edit Apps to add",
                      font=("Segoe UI",8), fg=SUBTEXT, bg=PANEL).pack(anchor="w")
             return
-        row = None
-        for i, app in enumerate(apps[:6]):
-            if i % 3 == 0:
-                row = tk.Frame(parent, bg=PANEL)
-                row.pack(anchor="w", fill="x", pady=(0,3))
-            tk.Label(row, text=app, font=("Segoe UI",8),
-                     fg="#a8d4ff", bg="#152533", padx=8, pady=3).pack(side="left", padx=(0,6))
-        if len(apps) > 6:
-            tk.Label(parent, text=f"+{len(apps)-6} more",
-                     font=("Segoe UI",8), fg=SUBTEXT, bg=PANEL).pack(anchor="w")
+        # Show up to 6 chips across 2 rows of 3, using available width.
+        # Beyond 6, show "+N more" badge. Card height stays fixed.
+        MAX_CHIPS = 6
+        shown = apps[:MAX_CHIPS]
+        remaining = len(apps) - MAX_CHIPS
+        for row_start in range(0, len(shown), 3):
+            row = tk.Frame(parent, bg=PANEL)
+            row.pack(anchor="w", fill="x", pady=(0,2))
+            for app in shown[row_start:row_start+3]:
+                tk.Label(row, text=app, font=("Segoe UI",8),
+                         fg="#a8d4ff", bg="#152533", padx=8, pady=2).pack(side="left", padx=(0,4))
+            # Show "+N more" at end of last row
+            if row_start + 3 >= len(shown) and remaining > 0:
+                tk.Label(row, text=f"+{remaining} more",
+                         font=("Segoe UI",8), fg=SUBTEXT, bg=PANEL,
+                         padx=4, pady=2).pack(side="left")
 
     def _mk_slider(self,group,vol_var,lbl,color):
         def _cmd(val):
@@ -3827,13 +4408,12 @@ class App:
 
     def _mk_mute(self,group,btn,lbl,color):
         def _cmd():
-            if group.get("muted"): group["muted"]=False; group["volume"]=group.get("_vbm",80)
-            else: group["_vbm"]=group["volume"]; group["muted"]=True
+            _toggle_group_mute(group, self.cfg)
             btn.config(text="Muted" if group["muted"] else "Mute",
                        bg="#3a1a1a" if group["muted"] else BORDER,
                        fg="#ff6b6b" if group["muted"] else SUBTEXT)
             lbl.config(text=self._vt(group),fg="#ff6b6b" if group["muted"] else color)
-            apply_vol(group,self.cfg); self._autosave()
+            self._autosave()
         return _cmd
 
     def _on_name(self,g,v): g["name"]=v.get(); self._autosave()
@@ -3846,7 +4426,7 @@ class App:
         col=ACCENT[nid%len(ACCENT)]
         self.cfg["groups"].append({"id":nid,"name":f"Group {nid+1}","color":col,
             "apps":[],"foreground_mode":False,"keys":{"vol_down":"","vol_up":"","mute":""},
-            "single_key":"","step":5,"volume":80,"muted":False,"_vbm":80,
+            "single_key":"","quick_add_key":"","step":5,"volume":80,"muted":False,"_vbm":80,
             "enabled":True,"is_default":False})
         self._ensure_single_default_group()
         self._autosave(); self._redraw()
@@ -3867,7 +4447,7 @@ class App:
             "id":nid, "name":"Master Volume", "color":"#00BCD4",
             "apps":[], "foreground_mode":False, "master_volume":True,
             "keys":{"vol_down":"","vol_up":"","mute":""},
-            "single_key":"","step":5,"volume":80,"muted":False,"_vbm":80,
+            "single_key":"","quick_add_key":"","step":5,"volume":80,"muted":False,"_vbm":80,
             "enabled":True,"is_default":False,
         })
         self._ensure_single_default_group()
@@ -3912,10 +4492,10 @@ class App:
                 def _set_single_hotkey(hk, a=action):
                     ok, msg = _validate_hotkey_choice(self.cfg, hk, ("single_shared", a))
                     if not ok:
-                        _themed_alert(self.root, "Hotkey already in use", msg)
-                        return
+                        return False, msg
                     self.cfg["single_keys"][a] = hk
                     self._autosave()
+                    return True, ""
                 _make_hk_cell(row1, lbl,
                               lambda a=action: sk.get(a,""),
                               _set_single_hotkey,
@@ -3927,23 +4507,29 @@ class App:
         def _ck_cb(hk):
             ok, msg = _validate_hotkey_choice(self.cfg, hk, ("cycle",))
             if not ok:
-                _themed_alert(self.root, "Hotkey already in use", msg)
-                return
+                return False, msg
             self.cfg["cycle_key"] = hk; self._autosave()
+            return True, ""
         def _ck_clr(): self.cfg["cycle_key"] = ""; self._autosave()
         _make_hk_cell(row1, "Cycle",
                       lambda: self.cfg.get("cycle_key",""),
                       _ck_cb, _ck_clr).pack(side="left")
+        def _qa_cb2(hk):
+            ok, msg = _validate_hotkey_choice(self.cfg, hk, ("quick_add_single",))
+            if not ok:
+                return False, msg   # HotkeyCapture shows error + reverts
+            self.cfg["quick_add_key_single"] = hk; self._autosave()
+            return True, ""
+        def _qa_clr2(): self.cfg["quick_add_key_single"] = ""; self._autosave()
+        _make_hk_cell(row1, "Quick Add App",
+                      lambda: self.cfg.get("quick_add_key_single",""),
+                      _qa_cb2, _qa_clr2).pack(side="left", padx=(10,0))
 
     def _on_mode(self):
         mode = self._mode_var.get()
         self.cfg["mode"] = mode
-        # When switching to multi: suspend hw_knob in the hook but preserve the
-        # user's preference in cfg so it restores when switching back to single.
-        # The hook checks mode=="single" before acting on hw_knob_enabled, so
-        # simply reloading hotkeys with mode="multi" is enough to deactivate it.
         self._init_single()
-        self.hk.reload(self.cfg, self._on_vol, self._on_switch)
+        self.hk.reload(self.cfg, self._on_vol, self._on_switch, on_quick_add=self._quick_add_to_group)
         self._redraw()
         if mode == "single":
             self._sb.pack(fill="x")
@@ -3970,11 +4556,8 @@ class App:
         elif gs:
             self._active_grp=gs[0]
             self.cfg["_active_group_ref"]=self._active_grp
-        if self.cfg.get("mode")=="single" or self.cfg.get("hw_knob_enabled"):
+        if self.cfg.get("mode")=="single":
             self._update_active_lbl()
-        # Show active bar if hw_knob enabled (even in multi mode)
-        if self.cfg.get("hw_knob_enabled") and self.cfg.get("mode")=="multi":
-            self._sb.pack(fill="x")
 
     def _on_switch(self,group):
         self._active_grp=group; self.cfg["_active_group_ref"]=group
@@ -4064,6 +4647,54 @@ class App:
     def _show_saved(self):
         self._dirty_lbl.config(text="✓ Saved")
         self.root.after(1500,lambda: self._dirty_lbl.config(text=""))
+
+    # ── Quick Add ─────────────────────────────────────────────────────────────
+    def _quick_add_to_group(self, group):
+        """Add the current foreground app to group. Runs on hook thread —
+        all UI work via root.after(0, ...). Config mutation under _cfg_lock."""
+        exe = _foreground_exe_for_quickadd()
+        if not exe:
+            return
+        name = exe.lower().removesuffix(".exe")
+
+        with _cfg_lock:
+            # Already in THIS group?
+            if name in [a.lower() for a in group.get("apps", [])]:
+                self.root.after(0, lambda g=group, n=name:
+                    self._show_quickadd_popup(g, n, status="exists_here"))
+                return
+            # Already in ANOTHER group?
+            for other in self.cfg.get("groups", []):
+                if other is group:
+                    continue
+                if name in [a.lower() for a in other.get("apps", [])]:
+                    self.root.after(0, lambda g=other, n=name:
+                        self._show_quickadd_popup(g, n, status="exists_other"))
+                    return
+            # Add it
+            group.setdefault("apps", []).append(name)
+
+        try:
+            save_cfg(self.cfg)
+        except Exception:
+            pass
+        apply_vol(group, self.cfg)
+        self.root.after(0, self._redraw)
+        self.root.after(0, lambda g=group, n=name:
+            self._show_quickadd_popup(g, n, status="added"))
+
+    def _show_quickadd_popup(self, group, app_name, status="added"):
+        """Show volume-style popup confirming a quick-add action."""
+        if not self.cfg.get("show_overlay", True):
+            return
+        color = group.get("color", "#888")
+        gname = group.get("name", "Group")
+        if status == "added":
+            msg = f"Added {app_name}"
+        else:
+            msg = f"{app_name} already in {gname}"
+        self.overlay.show_message(gname, color, msg,
+                                  self.cfg.get("overlay_size", 1.0))
 
     # ── Global on/off ─────────────────────────────────────────────────────────
     def set_update_available(self, ver, url):
@@ -4172,7 +4803,7 @@ class App:
         self._enabled=not self._enabled
         if self._enabled:
             self._onoff_btn.config(text="Enabled",bg="#183524",fg="#1DB954")
-            self.hk.reload(self.cfg,self._on_vol,self._on_switch)
+            self.hk.reload(self.cfg,self._on_vol,self._on_switch,on_quick_add=self._quick_add_to_group)
             self._reg_mic_hk()
         else:
             self._onoff_btn.config(text="Disabled",bg="#2a1a1a",fg="#8b7280")
@@ -4196,13 +4827,16 @@ class App:
         if not hk or not self.cfg.get("mic_enabled", False):
             return
         # suppress=False: key passes through to game AND triggers mic toggle
-        _HOOK.register(hk, self._toggle_mic, suppress=False)
+        # 350ms debounce — mutes instantly on first press, but prevents
+        # accidental double-fire from a heavy touch holding the key slightly too long.
+        _HOOK.register(hk, self._toggle_mic, suppress=False, debounce=0.35)
 
     def _toggle_mic(self):
         self.mic.toggle(self.cfg)
         if self.mic_ov: self.root.after(0, self.mic_ov.update)
         # Update tray icon colour (green=live, red=muted)
         self.root.after(0, self._refresh_tray)
+        self.root.after(0, self._refresh_home_mic_btn)
 
     def _refresh_tray(self):
         try:
@@ -4214,12 +4848,41 @@ class App:
             pass
 
     # ── Volume change callback ─────────────────────────────────────────────────
+    def _refresh_home_mic_btn(self):
+        btn = self._home_mic_btn
+        if not btn:
+            return
+        if not self.cfg.get("mic_enabled", False):
+            try:
+                if btn.winfo_manager():
+                    btn.pack_forget()
+            except:
+                pass
+            self._home_mic_img = None
+            return
+        self._home_mic_img = None
+        if self.mic.get():
+            btn.config(image="", text="Mic",
+                       bg="#3a1a1a", fg="#ff6b6b",
+                       activebackground="#4a2323", activeforeground="#ff6b6b")
+        else:
+            btn.config(image="", text="Mic",
+                       bg="#183524", fg="#1DB954",
+                       activebackground="#214733", activeforeground="#1DB954")
+        try:
+            if not btn.winfo_manager():
+                btn.pack(side="right", padx=(0,4), before=self._update_btn)
+        except:
+            pass
+
     def _on_vol(self,group):
         if self.cfg.get("show_overlay",True):
             self.root.after(0,lambda g=group:
                 self.overlay.show(g["name"],g.get("color","#888"),
                                   g["volume"],g.get("muted",False),
-                                  self.cfg.get("overlay_size",1.0)))
+                                  self.cfg.get("overlay_size",1.0),
+                                  detail_text=g.get("_overlay_detail"),
+                                  show_bar=g.get("_overlay_show_bar", True)))
         # Sync UI immediately + again after 150ms for master vol readback
         self.root.after(0, self._sync)
         self.root.after(150, self._sync)
@@ -4239,6 +4902,19 @@ class App:
         # Only sync UI when window is actually visible — saves CPU when in tray
         if self.root.winfo_viewable():
             self._sync()
+        # Check if screen geometry changed (resolution/monitor change) and
+        # reposition mic overlay if needed — do this every 5s, not every 1s
+        if not hasattr(self, '_last_screen_w'):
+            self._last_screen_w = self.root.winfo_screenwidth()
+            self._last_screen_h = self.root.winfo_screenheight()
+        else:
+            sw = self.root.winfo_screenwidth()
+            sh = self.root.winfo_screenheight()
+            if sw != self._last_screen_w or sh != self._last_screen_h:
+                self._last_screen_w = sw
+                self._last_screen_h = sh
+                if self.mic_ov:
+                    self.root.after(0, self.mic_ov._reposition)
         self.root.after(1000, self._refresh_loop)
 
     def _sync_mute_states(self):
@@ -4262,7 +4938,7 @@ class App:
             print("[Hook] Health check: hook dead — restarting")
             _HOOK._running = False
             _HOOK.start()
-            self.hk.reload(self.cfg, self._on_vol, self._on_switch)
+            self.hk.reload(self.cfg, self._on_vol, self._on_switch, on_quick_add=self._quick_add_to_group)
         self.root.after(10000, self._hook_health_check)
 
     # ── Autosave ──────────────────────────────────────────────────────────────
@@ -4273,7 +4949,7 @@ class App:
             try: g["step"]=w["step_var"].get()
             except: pass
         save_cfg(self.cfg)
-        self.hk.reload(self.cfg,self._on_vol,self._on_switch)
+        self.hk.reload(self.cfg,self._on_vol,self._on_switch,on_quick_add=self._quick_add_to_group)
         self._reg_mic_hk()
         if self.mic_ov: self.mic_ov.update()
         self._show_saved()
@@ -4284,6 +4960,35 @@ class App:
         return (hasattr(self, "_settings_win") and
                 self._settings_win is not None and
                 self._settings_win.winfo_exists())
+
+    def _open_howto(self):
+        """Open Settings window directly on the How To Use tab."""
+        if self._settings_open():
+            self._settings_win.lift()
+            # Switch to How To tab
+            try:
+                nb = self._settings_win.nametowidget(
+                    self._settings_win.winfo_children()[0])
+                # Find the notebook and select last tab (How To Use)
+                for child in self._settings_win.winfo_children():
+                    if hasattr(child, 'select'):
+                        child.select(3)  # How To Use is tab index 3
+                        break
+            except Exception:
+                pass
+            return
+        self._settings_win = SettingsWin(self.root, self.cfg, self._on_settings_change,
+                                          quit_fn=self._quit, app_ref=self)
+        # Switch to How To tab after window is built
+        def _switch_tab():
+            try:
+                for child in self._settings_win.winfo_children():
+                    if hasattr(child, 'select'):
+                        child.select(3)
+                        break
+            except Exception:
+                pass
+        self.root.after(50, _switch_tab)
 
     def _open_settings(self):
         if self._settings_open():
@@ -4298,7 +5003,7 @@ class App:
         self.overlay.set_enabled(False)
         self.root.after(100, lambda: self.overlay.set_enabled(
             self.cfg.get("show_overlay", True)))
-        self.hk.reload(self.cfg,self._on_vol,self._on_switch)
+        self.hk.reload(self.cfg,self._on_vol,self._on_switch,on_quick_add=self._quick_add_to_group)
         self._reg_mic_hk()
         if self.cfg.get("mic_enabled", False):
             if self.mic_ov:
@@ -4308,6 +5013,7 @@ class App:
                 self.mic_ov = MicOverlay(self.root, self.mic, self.cfg)
         else:
             if self.mic_ov: self.mic_ov.hide()
+        self._refresh_home_mic_btn()
 
     # ── Tray ─────────────────────────────────────────────────────────────────
     def _setup_tray(self):
@@ -4357,6 +5063,18 @@ class App:
             self._settings_win.destroy()
         self.hk.stop(); _HOOK.stop(); self.tray.stop(); self.root.after(0,self.root.destroy)
 
+    def _on_first_launch(self):
+        """Called once after first launch to enable start_minimized for future launches."""
+        if not self.cfg.get("start_minimized", False):
+            self.cfg["start_minimized"] = True
+            save_cfg(self.cfg)
+            # Update the checkbox in settings if open
+            if self._settings_open():
+                try:
+                    self._settings_win._v_startmin.set(True)
+                except Exception:
+                    pass
+
     def run(self):
         global _update_callback
         # Route update results to this app instance's UI handler.
@@ -4372,6 +5090,9 @@ class App:
         self.root.after(2000, self._sync_mute_states)
         # Mark hotkeys as active after startup — prevents spurious overlay shows
         self.root.after(1000, lambda: setattr(self, "_hotkeys_active", True))
+        # After first launch, enable start_minimized for future launches
+        if not self.cfg.get("start_minimized", False):
+            self.root.after(3000, self._on_first_launch)
         if not self.cfg.get("tutorial_seen", False):
             self.root.after(800, self._start_tutorial)
         self.root.mainloop()
@@ -4460,7 +5181,7 @@ class AppsDialog(tk.Toplevel):
 
         # ── Section 3: Open apps quick-add ───────────────────────────────────
         hdr2 = tk.Frame(self, bg=BG); hdr2.pack(fill="x", padx=12, pady=(8,2))
-        tk.Label(hdr2, text="Open apps — click to add:",
+        tk.Label(hdr2, text="Open apps playing audio — click to add:",
                  font=("Segoe UI",8), fg=SUBTEXT, bg=BG).pack(side="left")
         tk.Button(hdr2, text="↻ Refresh", font=("Segoe UI",7), bg=BORDER,
                   fg=SUBTEXT, relief="flat", cursor="hand2", padx=4, pady=1,
@@ -4546,7 +5267,7 @@ class AppsDialog(tk.Toplevel):
         apps = self._get_open_apps()
         if not apps:
             tk.Label(self._open_inner,
-                     text="  (no apps with audio sessions found)",
+                     text="  (no apps playing audio found — start playing something and refresh)",
                      font=("Segoe UI",8), fg=SUBTEXT, bg=PANEL,
                      pady=6).pack(anchor="w")
             return
@@ -4658,37 +5379,90 @@ def _get_install_id():
     id_file.write_text(new_id)
     return new_id
 
-def _should_ping_today():
-    """Return True if we haven't successfully pinged analytics today yet.
-    NOTE: stamp is written AFTER success, not before (#3)."""
+_ping_lock = threading.Lock()
+_ping_pending_days = set()
+
+def _utc_day():
+    import datetime
+    return datetime.datetime.now(datetime.timezone.utc).date().isoformat()
+
+def _should_ping_day(day=None):
+    """Return True if we haven't successfully pinged analytics for this UTC day yet."""
     stamp_file = APPDATA_DIR / "last_ping"
-    import datetime
-    today = datetime.date.today().isoformat()
-    if stamp_file.exists() and stamp_file.read_text().strip() == today:
-        return False
-    return True  # Don't stamp yet — stamp after successful ping
+    day = day or _utc_day()
+    if stamp_file.exists():
+        try:
+            if stamp_file.read_text().strip() == day:
+                return False
+        except:
+            pass
+    return True
 
-def _stamp_ping_today():
-    """Mark today as successfully pinged."""
-    import datetime
+def _stamp_ping_day(day):
+    """Mark a UTC day as successfully pinged without moving the stamp backward."""
     try:
-        (APPDATA_DIR / "last_ping").write_text(datetime.date.today().isoformat())
-    except: pass
+        stamp_file = APPDATA_DIR / "last_ping"
+        prev = ""
+        if stamp_file.exists():
+            try:
+                prev = stamp_file.read_text().strip()
+            except:
+                prev = ""
+        if not prev or day >= prev:
+            stamp_file.write_text(day)
+    except:
+        pass
 
-def _ping_analytics(cfg=None):
-    """Daily analytics ping with exponential backoff retry.
-    Handles offline-at-launch then reconnect — like Steam/Discord do it."""
-    if not cfg or not cfg.get("analytics_enabled", True): return
+def _ping_optout(cfg=None):
+    """Send a one-time opt-out event so the dashboard shows opt-out counts.
+    Only fires once per install — stamped separately from the daily ping."""
     if not ANALYTICS_URL: return
-    if not _should_ping_today(): return
-
-    def _send(attempt=0):
-        import urllib.request, platform, json, time
+    stamp_file = APPDATA_DIR / "optout_sent"
+    if stamp_file.exists(): return
+    def _send():
+        import urllib.request, platform, json
         try:
             data = {
                 "id":      _get_install_id(),
                 "version": APP_VER,
                 "os":      platform.version()[:40],
+                "event":   "optout",
+            }
+            req = urllib.request.Request(
+                ANALYTICS_URL,
+                data=json.dumps(data).encode(),
+                headers={"Content-Type": "application/json",
+                         "User-Agent": f"KnobMixer/{APP_VER}"},
+                method="POST"
+            )
+            urllib.request.urlopen(req, timeout=5)
+            stamp_file.write_text("1")
+        except Exception:
+            pass
+    threading.Thread(target=_send, daemon=True).start()
+
+def _ping_analytics(cfg=None, event="launch"):
+    """Daily analytics ping with exponential backoff retry.
+    Handles offline-at-launch then reconnect — like Steam/Discord do it."""
+    if not cfg or not cfg.get("analytics_enabled", True): return
+    if not ANALYTICS_URL: return
+    day = _utc_day()
+    if not _should_ping_day(day): return
+    with _ping_lock:
+        if day in _ping_pending_days:
+            return
+        _ping_pending_days.add(day)
+
+    def _send(attempt=0, ping_day=day, ping_event=event):
+        import urllib.request, platform, json, time, datetime
+        try:
+            data = {
+                "id":      _get_install_id(),
+                "version": APP_VER,
+                "os":      platform.version()[:40],
+                "event":   ping_event,
+                "utc_day": ping_day,
+                "ts_utc":  datetime.datetime.now(datetime.timezone.utc).isoformat(),
             }
             req = urllib.request.Request(
                 ANALYTICS_URL,
@@ -4698,17 +5472,41 @@ def _ping_analytics(cfg=None):
                 method="POST"
             )
             urllib.request.urlopen(req, timeout=5)
-            _stamp_ping_today()  # only stamp on success (#3)
+            _stamp_ping_day(ping_day)  # only stamp on success (#3)
+            with _ping_lock:
+                _ping_pending_days.discard(ping_day)
         except Exception:
             # Non-blocking retry with threading.Timer (#10)
             # Retry schedule: 15s, 1min, 5min, 15min, 1hr
             # Covers slow boot network connections (Start With Windows users)
             delays = [15, 60, 300, 900, 3600]
             if attempt < len(delays):
-                threading.Timer(delays[attempt], lambda a=attempt: _send(a + 1)).start()
-            # else: silently give up until next launch
+                threading.Timer(delays[attempt], lambda a=attempt, d=ping_day, e=ping_event: _send(a + 1, d, e)).start()
+            else:
+                with _ping_lock:
+                    _ping_pending_days.discard(ping_day)
 
     threading.Thread(target=_send, daemon=True).start()
+
+def _schedule_daily_ping(cfg):
+    """Re-ping once at each UTC midnight while the app stays running, so
+    always-on PCs are counted every active day. One timer, re-arms itself.
+    Calls _ping_analytics which honours analytics_enabled + dedup logic."""
+    import datetime
+    def _secs_to_utc_midnight():
+        now = datetime.datetime.now(datetime.timezone.utc)
+        tomorrow = (now + datetime.timedelta(days=1)).replace(
+            hour=0, minute=0, second=0, microsecond=0)
+        return max(60.0, (tomorrow - now).total_seconds() + 5.0)
+    def _fire():
+        try:
+            _ping_analytics(cfg)
+        except Exception:
+            pass
+        _schedule_daily_ping(cfg)   # re-arm for next midnight
+    t = threading.Timer(_secs_to_utc_midnight(), _fire)
+    t.daemon = True
+    t.start()
 
 def _ver_tuple(s):
     try: return tuple(int(x) for x in s.strip().lstrip("v").split("."))
@@ -4794,6 +5592,10 @@ if __name__=="__main__":
 
     app = App()
     _ping_analytics(app.cfg)
+    _schedule_daily_ping(app.cfg)   # count always-on PCs on UTC day rollover
+    # If user opted out, record it once so dashboard shows opt-out count
+    if not app.cfg.get("analytics_enabled", True):
+        _ping_optout(app.cfg)
     # Daily silent update check — no popups, just updates the tray badge/button
     if _should_check_update_today():
         def _on_version(ver, url):
