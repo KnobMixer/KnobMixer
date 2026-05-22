@@ -13,7 +13,9 @@ Control the volume of individual apps independently. Turn one knob for your game
 **Requires:** Windows 10 or 11 (64-bit)
 
 ---
-If you need help setting up your hotkeys, follow the setup guide below.
+If your knob already controls your PC volume, simply enable Hardware Knob at the top of the main page, set your Cycle key, and add your apps to whichever groups you want.
+
+If you want full customization, follow the guide below.
 
 ## Setup (Takes 1-2 minutes)
 
