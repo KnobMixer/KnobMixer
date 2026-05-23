@@ -592,10 +592,7 @@ def load_cfg():
                         ("start_minimized",True),("show_overlay",True),("overlay_pct_x",-1),("overlay_pct_y",-1),("overlay_mon",None),
                         ("mic_pct_x",-1),("mic_pct_y",-1),("mic_mon",None)]:
                 d.setdefault(k,v)
-            # 2.7.6: All users opted in. To opt out, set
-            # "analytics_enabled": false in %APPDATA%\KnobMixer\config.json
-            d["analytics_enabled"] = True
-            # 2.7.6: Tutorial replaced by ? button — mark seen for all users
+            d["analytics_enabled"] = True  # default for all versions
             d["tutorial_seen"] = True
             # Clamp numeric values to safe ranges
             for g in d.get("groups", []):
