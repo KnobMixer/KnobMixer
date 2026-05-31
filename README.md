@@ -24,7 +24,6 @@ KnobMixer is a new app and isn't yet recognized by Microsoft SmartScreen, so Win
 
 To continue: click **More info → Run anyway**.
 
-KnobMixer is open source — no ads, no tracking, no login. You can read every line of code right here.
 
 ---
 
