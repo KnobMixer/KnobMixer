@@ -1,0 +1,54 @@
+KnobMixer End-User License Agreement (EULA)
+Version 3.0.1 - (c) 2026 KnobMixer
+
+By installing or using KnobMixer ("the Software"), you agree to the terms
+below. If you do not agree, do not install or use the Software.
+
+1. License
+KnobMixer grants you a free, non-exclusive, non-transferable license to
+install and use the Software on computers you own or control, for personal
+or business use.
+
+2. What you may not do
+You may not:
+  a) sell, rent, or charge money for the Software or for access to it;
+  b) redistribute modified copies, or redistribute the installer bundled
+     with other software, without written permission;
+  c) reverse engineer, decompile, or disassemble the Software, except to
+     the extent applicable law expressly permits it;
+  d) remove or alter copyright, publisher, or signature information.
+
+3. Ownership
+The Software is licensed, not sold. KnobMixer versions 3.0.1 and later
+are proprietary software. All rights not expressly granted remain with
+KnobMixer. Older versions (2.7.6 and earlier) remain available under
+their own, separate license terms.
+
+4. Privacy
+The Software can send a small anonymous daily ping so the project can see
+that installed copies work. It contains no personal information and can be
+turned off in Settings at any time. Details are described in the KnobMixer
+Privacy Policy, which accompanies the Software.
+
+5. Updates
+The Software checks once per day whether a new version exists. Updates are
+downloaded and installed only when you choose to install them.
+
+6. No warranty
+The Software is provided "as is", without warranty of any kind, express or
+implied, including the warranties of merchantability, fitness for a
+particular purpose, and non-infringement. You use the Software at your own
+risk.
+
+7. Limitation of liability
+To the maximum extent permitted by law, KnobMixer shall not be liable for
+any damages arising out of the use of, or inability to use, the Software,
+including lost data, lost profits, or system damage, even if advised of
+the possibility of such damages.
+
+8. Termination
+This license ends automatically if you violate its terms. On termination,
+you must uninstall the Software.
+
+9. Contact
+KnobMixer - https://github.com/KnobMixer/KnobMixer
