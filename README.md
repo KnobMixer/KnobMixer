@@ -7,6 +7,8 @@
 <p align="center"><b><a href="https://github.com/KnobMixer/KnobMixer/releases/latest/download/KnobMixer_Setup.exe">Download for Windows</a></b><br>
 Free · Windows 10/11</p>
 
+> ⚠️ **Heads up — first launch:** Windows may show a blue **"Windows protected your PC"** screen. This is normal for a newly released app — click **More info**, then **Run anyway**.
+
 ## 4 types of knobs
 
 - **Cycle** — cycle through open apps playing audio
