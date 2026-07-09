@@ -1,3 +1,5 @@
+<p align="center"><img src="knobmixer_logo.png" width="120" alt="KnobMixer logo"></p>
+
 <h1 align="center">KnobMixer</h1>
 
 <p align="center">KnobMixer gives you audio control using your keyboard knob. Turn your volume knob into a mixer for your apps — cycle between them with a click.</p>
@@ -15,6 +17,10 @@ Free · Windows 10/11</p>
 - **Specific apps** — controls only the apps you assign to this knob
 - **System volume** — controls the Windows master volume
 - **Active Window** — always controls the app currently in focus
+
+## Contact
+
+Questions, feedback, or a bug to report? Email [support@knobmixer.com](mailto:support@knobmixer.com).
 
 ## Privacy & License
 
