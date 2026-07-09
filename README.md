@@ -20,7 +20,7 @@ Free · Windows 10/11</p>
 
 ## Contact
 
-Questions, feedback, or a bug to report? Email [support@knobmixer.com](mailto:support@knobmixer.com).
+Questions, feedback, or a bug to report? Email [support@knobmixer.com](mailto:support@knobmixer.com)
 
 ## Privacy & License
 
