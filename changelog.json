@@ -1,0 +1,88 @@
+{
+  "v": 1,
+  "entries": [
+    {
+      "version": "3.0.6",
+      "date": "2026-07-14",
+      "channel": "stable",
+      "major": "",
+      "changes": [
+        "Hotkey diagnostics rebuilt: the guided Input Channel Test now works with any key or key combination.",
+        "New Diagnostics settings tab: reporting, troubleshooting, and settings data in one place.",
+        "Hotkey troubleshooting now turns itself off after 10 minutes without test activity.",
+        "Apps appear in the Cycle knob only if they have any audio, and stay as long as they have an audio session with Windows. This removes apps that don't make any audio (such as game launchers) from the list. The Specific apps knob is unaffected — it still shows the apps you picked.",
+        "Upgrades from 2.7.x now keep a safe backup of your old settings under %APPDATA%\\KnobMixer\\Legacy Backups, and start fresh with the new knob system.",
+        "Fixed newly launched or newly playing apps not being detected while KnobMixer was minimized to the system tray.",
+        "Fixed a sleep/resume lifecycle problem that could leave hotkeys unresponsive or destabilize KnobMixer after Windows wakes.",
+        "Mute is more reliable for apps with several audio streams.",
+        "Installing an update now closes the running KnobMixer cleanly, so your latest settings are always kept.",
+        "Windows' System Sounds no longer shows up as an \"Explorer\" app.",
+        "Improves volume-popup sizing on high-DPI monitors."
+      ]
+    },
+    {
+      "version": "3.0.5",
+      "date": "2026-07-11",
+      "channel": "beta",
+      "major": "",
+      "changes": [
+        "Adds a guided Hotkey Troubleshooting test for diagnosing keys KnobMixer cannot detect (testing release)."
+      ]
+    },
+    {
+      "version": "3.0.4",
+      "date": "2026-07-10",
+      "channel": "stable",
+      "major": "",
+      "changes": [
+        "Hotkey capture rebuilt on KnobMixer's own keyboard hook with a health check, so key detection can recover instead of silently stopping.",
+        "Clearer names for F13–F24 and numpad keys when assigning hotkeys.",
+        "New optional Hotkey troubleshooting tools for diagnosing keys KnobMixer cannot detect (off by default)."
+      ]
+    },
+    {
+      "version": "3.0.3",
+      "date": "2026-07-08",
+      "channel": "stable",
+      "major": "",
+      "changes": [
+        "Fixed Mute occasionally flipping the wrong way when an app was muted outside KnobMixer.",
+        "Any key can now be assigned as a hotkey, including keys Windows reports without a usable name.",
+        "New Early access option to receive new versions before everyone else."
+      ]
+    },
+    {
+      "version": "3.0.2",
+      "date": "2026-07-06",
+      "channel": "stable",
+      "major": "",
+      "changes": [
+        "Fixed the main window sometimes reopening black until moved.",
+        "One key press now always performs exactly one action.",
+        "Updates are only offered once the installer is fully published."
+      ]
+    },
+    {
+      "version": "3.0.1",
+      "date": "2026-07-06",
+      "channel": "beta",
+      "major": "",
+      "changes": [
+        "New per-app icons and cleaner main window.",
+        "Popup polish and new selected-app highlight colours.",
+        "Many small fixes from the first 3.0 feedback round."
+      ]
+    },
+    {
+      "version": "3.0.0",
+      "date": "2026-07-04",
+      "channel": "stable",
+      "major": "KnobMixer 3 replaces the old group modes with customizable knobs. Settings from 2.7.x are backed up and the app starts fresh — your controls need to be set up again.",
+      "changes": [
+        "All-new knob system: add as many knobs as you need — Cycle, Specific apps, System, or Active window.",
+        "All-new main window and settings.",
+        "Informational volume popup with per-app rows."
+      ]
+    }
+  ]
+}
