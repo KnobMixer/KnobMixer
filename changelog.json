@@ -7,17 +7,20 @@
       "channel": "stable",
       "major": "",
       "changes": [
-        "New guided setup: a step-by-step wizard helps you set up your first knob, including volume knobs that Windows normally won't let apps remap.",
-        "New Compact mode: the titlebar's minimize button shrinks the window to a slim list of your knobs and their apps, with a pin to keep it on top; the restore icon brings the full window back.",
-        "New popup colour themes: 15 looks for the volume popup and 14 colours for the highlighted app. Classic stays the default and looks exactly as before.",
-        "If a hotkey is already assigned, KnobMixer refuses the duplicate and tells you where it is already used.",
-        "Cycle entries can have their own volume step: click an entry's name to set it.",
-        "Optional: click the on-screen mic icon to mute and unmute (off by default).",
-        "Optional: keep the KnobMixer window always on top (off by default).",
-        "The volume popup now shows app icons.",
-        "Many stability and security fixes across hotkeys, audio, settings, and the update check.",
-        "Upgrading from KnobMixer 3.0.x keeps your settings.",
-        "Upgrading from KnobMixer 2.7.x removes your old settings - you set KnobMixer up again."
+        "Guided setup helps you configure your first knob and hotkeys.",
+        "Compact mode provides a smaller view of your knobs and applications.",
+        "Popup colour themes let you customize the popup and highlighted app.",
+        "Per-app volume steps — click an app’s name to set its individual volume step.",
+        "App icons now appear in the volume popup.",
+        "Optional microphone control — click the microphone icon to mute or unmute.",
+        "Optional always-on-top mode for the main and Compact windows.",
+        "Simpler volume-knob setup — the separate “Can’t remap your knob?” option has been removed. Volume and media keys can now be assigned directly.",
+        "Volume-knob keys work with every knob type — Cycle, Specific apps, System volume and Active window.",
+        "Fixed: duplicate hotkeys are refused, and KnobMixer identifies where the key is already assigned.",
+        "Fixed: improved hotkey reliability, startup, shutdown and long-running stability.",
+        "Many additional reliability and security fixes.",
+        "Upgrading from KnobMixer 3.0.x — your settings are kept.",
+        "Upgrading from KnobMixer 2.7.x — your old settings are removed and you set KnobMixer up again."
       ]
     },
     {
