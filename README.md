@@ -4,7 +4,7 @@
 
 <p align="center">KnobMixer gives you audio control using your keyboard knob. Turn your volume knob into a mixer for your apps — cycle between them with a click.</p>
 
-<p align="center"><img src="knobmixer_cycle.gif" width="820" alt="KnobMixer cycling between apps"></p>
+<p align="center"><img src="knobmixer_cycle.png" width="820" alt="KnobMixer cycling between apps"></p>
 
 <p align="center"><b><a href="https://github.com/KnobMixer/KnobMixer/releases/latest/download/KnobMixer_Setup.exe">Download for Windows</a></b><br>
 Free · Windows 10/11</p>
