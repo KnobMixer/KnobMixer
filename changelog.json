@@ -2,6 +2,25 @@
   "v": 1,
   "entries": [
     {
+      "version": "3.0.7",
+      "date": "2026-08-24",
+      "channel": "stable",
+      "major": "",
+      "changes": [
+        "New guided setup: a step-by-step wizard helps you set up your first knob, including volume knobs that Windows normally won't let apps remap.",
+        "New Compact mode: the titlebar's minimize button shrinks the window to a slim list of your knobs and their apps, with a pin to keep it on top; the restore icon brings the full window back.",
+        "New popup colour themes: 15 looks for the volume popup and 14 colours for the highlighted app. Classic stays the default and looks exactly as before.",
+        "If a hotkey is already assigned, KnobMixer refuses the duplicate and tells you where it is already used.",
+        "Cycle entries can have their own volume step: click an entry's name to set it.",
+        "Optional: click the on-screen mic icon to mute and unmute (off by default).",
+        "Optional: keep the KnobMixer window always on top (off by default).",
+        "The volume popup now shows app icons.",
+        "Many stability and security fixes across hotkeys, audio, settings, and the update check.",
+        "Upgrading from KnobMixer 3.0.x keeps your settings.",
+        "Upgrading from KnobMixer 2.7.x removes your old settings - you set KnobMixer up again."
+      ]
+    },
+    {
       "version": "3.0.6",
       "date": "2026-07-14",
       "channel": "stable",
