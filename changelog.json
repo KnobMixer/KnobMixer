@@ -5,9 +5,10 @@
       "version": "3.0.7",
       "date": "2026-08-24",
       "channel": "stable",
-      "major": "",
+      "major": "One knob now does everything - New: Hold-to-mute. Turn to change volume, press to switch app, hold to mute app - 4 controls, 1 knob.",
       "changes": [
         "Guided setup helps you configure your first knob and hotkeys.",
+        "Hold to mute — press and hold knob to mute. Short click still cycles.",
         "Compact mode provides a smaller view of your knobs and applications.",
         "Popup colour themes let you customize the popup and highlighted app.",
         "Per-app volume steps — click an app’s name to set its individual volume step.",
