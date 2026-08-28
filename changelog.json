@@ -2,6 +2,17 @@
   "v": 1,
   "entries": [
     {
+      "version": "3.0.8",
+      "date": "2026-08-28",
+      "channel": "stable",
+      "major": "",
+      "changes": [
+        "Fixed: Volume popups for Specific apps and System volume knobs now show their app or speaker icon correctly.",
+        "Settings: the Info group in the left menu is now called Help.",
+        "The original KnobMixer green is selectable again in the knob colour picker."
+      ]
+    },
+    {
       "version": "3.0.7",
       "date": "2026-08-24",
       "channel": "stable",

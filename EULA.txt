@@ -1,5 +1,5 @@
 KnobMixer End-User License Agreement (EULA)
-Version 3.0.7 - (c) 2026 KnobMixer
+Version 3.0.8 - (c) 2026 KnobMixer
 
 By installing or using KnobMixer ("the Software"), you agree to the terms
 below. If you do not agree, do not install or use the Software.
