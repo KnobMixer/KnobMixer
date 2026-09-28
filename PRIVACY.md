@@ -4,15 +4,9 @@ KnobMixer is built to know as little about you as possible. This page lists
 everything the app ever sends, word for word from how it is built.
 The daily ping (optional — the "Analytics" switch in the app)
 Once per day, KnobMixer sends one small message so we can see that installed
-copies are alive and working. It contains exactly six things:
-a random install ID — generated on your PC, not derived from your
-hardware, name, or any account; we cannot connect it to you
-the app version (e.g. 3.0.0)
-the internal build number
-the install channel (website or store)
-your Windows version number (e.g. 10.0.26100 — just the number)
-a yes/no flag: did you actually use KnobMixer since the last ping
-That's the whole list. Never your app names, hotkeys, settings, volume
+copies are alive and working.
+The check-in includes a random install ID generated on the PC, the app version and build, the install channel, and the Windows version number. It also includes a yes/no if the app was used, and whether setup was completed or skipped First 48 hours,  installation for new users sends an automatic problem signal incase the app failed to launch. .
+Never your app names, hotkeys, settings, volume
 levels, files, or anything typed.
 After a successful update, one extra message says "the update worked"
 (same fields, no usage flag).
@@ -20,9 +14,7 @@ If you turn Analytics off, the app sends one final "opting out"
 message, then stops sending anything. Your anonymous install ID stays on
 your PC and is never sent again while Analytics is off; if you later turn
 Analytics back on, that same ID resumes so your history isn't fragmented.
-The uninstaller sends one final "uninstalled" message (ID and version
-only) so uninstalls don't look like broken installs. It respects the
-Analytics switch: if you opted out, it sends nothing.
+When uninstalling, KnobMixer attempts to send an uninstall notice containing its install ID, app version and limited event and delivery-status information, even if Analytics is off. This does not turn Analytics back on. The notice indicates that uninstall started, not that it completed.
 Report a problem (only when you press Send)
 The in-app "Report a problem" form sends: your message, an email address
 only if you choose to enter one, the app version, your Windows version
