@@ -2,6 +2,21 @@
   "v": 1,
   "entries": [
     {
+      "version": "3.0.9",
+      "date": "2026-09-26",
+      "channel": "beta",
+      "major": "",
+      "changes": [
+        "Keep apps muted when changing volume — a new optional setting in General > Volume.",
+        "Redesigned setup wizard with clearer control demonstrations and assignment controls.",
+        "Knob check in Diagnostics to help troubleshoot knob and hotkey input.",
+        "Volume settings grouped together in General, including Slowdown Zone.",
+        "A gold “Cycle between assigned apps” switch in Knob settings.",
+        "A guide for launching KnobMixer with Windows as administrator, linked from General settings.",
+        "Fixes: This update focuses on stability and reliability, with numerous bug fixes and improvements throughout the app."
+      ]
+    },
+    {
       "version": "3.0.8",
       "date": "2026-08-28",
       "channel": "stable",
